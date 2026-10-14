@@ -1,0 +1,13 @@
+{{- if .Values.rbac.create }}
+# Read-only on everything. Secret values are masked as "****" before anything is written.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "pickle.fullname" . }}-read
+  labels:
+    {{- include "pickle.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: [get, list, watch]
+{{- end }}

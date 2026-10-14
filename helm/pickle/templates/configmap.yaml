@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pickle.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pickle.labels" . | nindent 4 }}
+data:
+  PICKLE_CLUSTER: {{ required "cluster is required (root directory in the repo, e.g. stg)" .Values.cluster | quote }}
+  PICKLE_GIT_URL: {{ required "git.url is required" .Values.git.url | quote }}
+  PICKLE_GIT_BRANCH: {{ .Values.git.branch | quote }}
+  PICKLE_GIT_SSH_USER: {{ .Values.git.sshUser | quote }}
+  PICKLE_GIT_USERNAME: {{ .Values.git.httpsUsername | quote }}
+  PICKLE_GIT_AUTHOR_NAME: {{ .Values.git.authorName | quote }}
+  {{- with .Values.git.authorEmail }}
+  PICKLE_GIT_AUTHOR_EMAIL: {{ . | quote }}
+  {{- end }}
+  PICKLE_COMMIT_INTERVAL: {{ .Values.config.commitInterval | quote }}
+  PICKLE_PAGE_SIZE: {{ .Values.config.pageSize | quote }}
+  PICKLE_PAGE_PAUSE: {{ .Values.config.pagePause | quote }}
+  PICKLE_QPS: {{ .Values.config.qps | quote }}
+  PICKLE_BURST: {{ .Values.config.burst | quote }}
+  PICKLE_REDISCOVERY_INTERVAL: {{ .Values.config.rediscoveryInterval | quote }}

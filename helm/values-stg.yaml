@@ -1,0 +1,4 @@
+cluster: stg
+git:
+  url: git@gitlab.example.com:devops/cluster-state.git
+  existingSecret: pickle-git

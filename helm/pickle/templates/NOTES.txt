@@ -1,0 +1,3 @@
+🥒 pickle is mirroring "{{ .Values.cluster }}" to {{ .Values.git.url }}.
+
+  sudo kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "pickle.fullname" . }}

@@ -1,0 +1,16 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "pickle.fullname" . }}-read
+  labels:
+    {{- include "pickle.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "pickle.fullname" . }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "pickle.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

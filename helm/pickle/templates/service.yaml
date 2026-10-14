@@ -1,0 +1,16 @@
+{{- if .Values.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pickle.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pickle.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "pickle.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ .Values.service.port }}
+      targetPort: metrics
+{{- end }}

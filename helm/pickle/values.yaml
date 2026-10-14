@@ -1,0 +1,69 @@
+# Required: root directory in the repo, e.g. stg.
+cluster: ""
+
+git:
+  # Required: git@host:path.git, ssh://... or https://...
+  url: ""
+  branch: main
+  # Use your own Secret (keys: ssh-privatekey + known_hosts, or token).
+  # When set, the credentials below are ignored.
+  existingSecret: ""
+  sshPrivateKey: ""
+  # Required with sshPrivateKey: output of `ssh-keyscan <git host>`.
+  knownHosts: ""
+  # For https:// URLs.
+  token: ""
+  sshUser: git
+  httpsUsername: pickle
+  authorName: pickle
+  # Defaults to pickle@<cluster>.local.
+  authorEmail: ""
+
+config:
+  commitInterval: 13s
+  pageSize: 50
+  pagePause: 200ms
+  qps: 5
+  burst: 10
+  rediscoveryInterval: 10m
+
+image:
+  repository: ghcr.io/hatam-abolghasemi/pickle
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+service:
+  enabled: true
+  port: 9090
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+podLabels: {}
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Size limit of the emptyDir holding the local clone.
+dataSizeLimit: 2Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
