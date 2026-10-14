@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pickle
+  namespace: pickle
+  labels: {app: pickle}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: pickle}
+  template:
+    metadata:
+      labels: {app: pickle}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: pickle
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: pickle
+        image: ghcr.io/hatam-abolghasemi/pickle:1.0.0
+        envFrom:
+        - configMapRef: {name: pickle}
+        ports:
+        - {name: metrics, containerPort: 9090}
+        livenessProbe:
+          httpGet: {path: /healthz, port: metrics}
+          periodSeconds: 30
+        resources:
+          requests: {cpu: 20m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 512Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: git, mountPath: /etc/pickle/git, readOnly: true}
+      volumes:
+      - name: data
+        emptyDir: {sizeLimit: 2Gi}
+      - name: git
+        secret: {secretName: pickle-git, defaultMode: 0440}

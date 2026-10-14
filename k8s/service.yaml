@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pickle
+  namespace: pickle
+  labels: {app: pickle}
+spec:
+  selector: {app: pickle}
+  ports:
+  - {name: metrics, port: 9090, targetPort: metrics}

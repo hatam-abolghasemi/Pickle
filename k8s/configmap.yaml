@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pickle
+  namespace: pickle
+data:
+  PICKLE_CLUSTER: stg
+  PICKLE_GIT_URL: "git@gitlab.example.com:devops/cluster-state.git"
+  PICKLE_GIT_BRANCH: main
+  PICKLE_COMMIT_INTERVAL: 13s
+  PICKLE_PAGE_SIZE: "50"
+  PICKLE_PAGE_PAUSE: 200ms
+  PICKLE_QPS: "5"
+  PICKLE_BURST: "10"
+  PICKLE_REDISCOVERY_INTERVAL: 10m
