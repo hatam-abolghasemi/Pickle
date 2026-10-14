@@ -1,0 +1,25 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Logs
+      description: Relevant lines from `kubectl -n pickle logs deploy/pickle`.
+      render: text
+  - type: input
+    attributes:
+      label: Versions
+      placeholder: pickle 1.0.0, Kubernetes 1.31, Helm 3.16
+    validations:
+      required: true
