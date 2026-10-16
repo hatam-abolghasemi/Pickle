@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
 )
@@ -120,7 +121,7 @@ func TestEngineEndToEnd(t *testing.T) {
 	cfg := &config{
 		Cluster: "stg", RepoDir: filepath.Join(t.TempDir(), "repo"), GitURL: remote, GitBranch: "master",
 		AuthorName: "pickle", AuthorEmail: "pickle@stg.local",
-		CommitInterval: 100 * time.Millisecond, RediscoveryInterval: time.Hour,
+		CommitDelay: 100 * time.Millisecond, CommitMaxDelay: time.Second,
 		PageSize: 1, PagePause: time.Millisecond,
 	}
 
@@ -226,6 +227,39 @@ func TestEngineEndToEnd(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("engine did not stop")
 	}
+
+	// Restart with exclusions: files mirrored before must be removed, and
+	// excluded kinds and namespaces must not come back.
+	cfg2 := *cfg
+	cfg2.RepoDir = filepath.Join(t.TempDir(), "repo")
+	cfg2.Exclude, _ = parseExclude("ClusterRole")
+	cfg2.ExcludeNamespaces = []string{"pay*"}
+	store2, err := openGitStore(&cfg2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2 := newMetrics("stg")
+	e2, err := newEngine(&cfg2, dyn, testDisco, store2, m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan error, 1)
+	go func() { done2 <- e2.run(ctx2) }()
+	waitFor(t, "exclusions applied", func() bool {
+		f := remoteFiles(t, remote)
+		for p := range f {
+			if strings.HasPrefix(p, "stg/payments/") || strings.HasPrefix(p, "stg/_cluster/clusterrole-") || p == "stg/_cluster/namespace-payments.yaml" {
+				return false
+			}
+		}
+		return m2.backfillComplete.Load() == 1
+	})
+	if f := remoteFiles(t, remote); f["prod/payments/configmap-keep.yaml"] == "" {
+		t.Error("exclusions must only touch this cluster's directory")
+	}
+	cancel2()
+	<-done2
 }
 
 func keys(m map[string]string) []string {
@@ -234,4 +268,38 @@ func keys(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestDiscoveryTriggers(t *testing.T) {
+	cfg := &config{Cluster: "stg", RepoDir: t.TempDir()}
+	e, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backfill = false
+	crd := &resource{gvr: schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}, kind: "CustomResourceDefinition", token: "customresourcedefinition"}
+	cm := &resource{gvr: schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}, kind: "ConfigMap", namespaced: true, token: "configmap"}
+
+	send := func(r *resource, o string) {
+		w := watch.NewFake()
+		go func() { w.Add(obj(t, o)); w.Stop() }()
+		e.consume(r, w, "")
+	}
+	send(cm, `{apiVersion: v1, kind: ConfigMap, metadata: {name: a, namespace: p}}`)
+	select {
+	case <-e.rediscover:
+		t.Fatal("an ordinary object must not trigger rediscovery")
+	default:
+	}
+	send(crd, `{apiVersion: apiextensions.k8s.io/v1, kind: CustomResourceDefinition, metadata: {name: widgets.example.com}}`)
+	select {
+	case <-e.rediscover:
+	default:
+		t.Fatal("a CRD change must trigger rediscovery")
+	}
+	select {
+	case <-e.changed:
+	default:
+		t.Fatal("a written object must wake the commit loop")
+	}
 }

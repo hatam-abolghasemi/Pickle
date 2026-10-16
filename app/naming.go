@@ -53,6 +53,19 @@ func (k *kindRegistry) token(kind, group string) string {
 	return kl + "." + g
 }
 
+// existing returns the token a kind already has, without claiming one.
+func (k *kindRegistry) existing(kind, group string) (string, bool) {
+	kl, g := strings.ToLower(kind), groupName(group)
+	owner, ok := k.claims[kl]
+	if !ok {
+		return "", false
+	}
+	if owner == g {
+		return kl, true
+	}
+	return kl + "." + g, true
+}
+
 func (k *kindRegistry) load(data []byte) error {
 	return yaml.Unmarshal(data, &k.claims)
 }

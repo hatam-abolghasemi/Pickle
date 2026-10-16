@@ -98,7 +98,20 @@ type engine struct {
 	visited    map[string]bool   // paths seen by backfill
 	backfilled map[string]bool   // resource ids fully backfilled
 	brokenAPIs map[string]string // group/version -> why discovery failed for it
+	excluded   map[string]bool   // resource ids excluded by PICKLE_EXCLUDE
+
+	changed    chan struct{} // something is waiting to be committed
+	rediscover chan struct{} // the set of served types may have changed
 }
+
+// Changes to these types can add or remove served resource types, so they
+// trigger a rediscovery instead of a timer polling for new types.
+var discoveryTriggers = map[string]bool{
+	"apiextensions.k8s.io/customresourcedefinitions": true,
+	"apiregistration.k8s.io/apiservices":             true,
+}
+
+const rediscoveryDelay = 5 * time.Second
 
 func newEngine(cfg *config, dyn dynamic.Interface, disco discoverer, g *gitStore, m *metrics) (*engine, error) {
 	e := &engine{
@@ -108,6 +121,8 @@ func newEngine(cfg *config, dyn dynamic.Interface, disco discoverer, g *gitStore
 		entries: map[string]entry{}, aux: map[string][32]byte{}, idx: newSecretIndex(),
 		dirty: map[string]change{}, unpushed: map[string]change{},
 		backfill: true, touched: map[string]bool{}, visited: map[string]bool{}, backfilled: map[string]bool{},
+		excluded: map[string]bool{},
+		changed:  make(chan struct{}, 1), rediscover: make(chan struct{}, 1),
 	}
 	if data, err := os.ReadFile(e.abs(path.Join(cfg.Cluster, kindsFile))); err == nil {
 		if err := e.reg.load(data); err != nil {
@@ -149,19 +164,37 @@ func (e *engine) run(ctx context.Context) error {
 	}
 	e.finishBackfill()
 
-	t := time.NewTicker(e.cfg.RediscoveryInterval)
-	defer t.Stop()
+	var tick <-chan time.Time
+	if e.cfg.RediscoveryInterval > 0 {
+		t := time.NewTicker(e.cfg.RediscoveryInterval)
+		defer t.Stop()
+		tick = t.C
+	}
+	var settle <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-t.C:
-			if res, err := e.discover(); err != nil {
-				slog.Warn("rediscovery failed", "err", err)
-			} else {
-				e.activateLater(ctx, res)
-			}
+		case <-e.rediscover:
+			settle = time.After(rediscoveryDelay) // a Helm chart often installs several CRDs at once
+			continue
+		case <-settle:
+		case <-tick:
 		}
+		settle = nil
+		if res, err := e.discover(); err != nil {
+			slog.Warn("rediscovery failed", "err", err)
+		} else {
+			e.activateLater(ctx, res)
+		}
+		releaseMemory()
+	}
+}
+
+func notify(c chan struct{}) {
+	select {
+	case c <- struct{}{}:
+	default:
 	}
 }
 
@@ -182,7 +215,7 @@ func (e *engine) discover() ([]*resource, error) {
 			broken[gv.String()] = "discovery failed: " + gerr.Error()
 		}
 	}
-	var out []*resource
+	var out, excluded []*resource
 	for _, l := range lists {
 		gv, err := schema.ParseGroupVersion(l.GroupVersion)
 		if err != nil {
@@ -192,7 +225,12 @@ func (e *engine) discover() ([]*resource, error) {
 			if strings.Contains(r.Name, "/") || !hasVerbs(r.Verbs, "list", "watch") || isNoise(gv.Group, r.Name) {
 				continue
 			}
-			out = append(out, &resource{gvr: gv.WithResource(r.Name), kind: r.Kind, namespaced: r.Namespaced})
+			res := &resource{gvr: gv.WithResource(r.Name), kind: r.Kind, namespaced: r.Namespaced}
+			if e.cfg.excluded(gv.Group, r.Name, r.Kind) {
+				excluded = append(excluded, res)
+				continue
+			}
+			out = append(out, res)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -212,6 +250,15 @@ func (e *engine) discover() ([]*resource, error) {
 	for _, r := range out {
 		r.token = e.reg.token(r.kind, r.gvr.Group)
 		e.tokens[r.token] = r.id()
+	}
+	for _, r := range excluded {
+		if !e.excluded[r.id()] {
+			slog.Info("excluded by PICKLE_EXCLUDE", "resource", r.id(), "kind", r.kind)
+		}
+		e.excluded[r.id()] = true
+		if t, ok := e.reg.existing(r.kind, r.gvr.Group); ok {
+			e.tokens[t] = r.id() // lets files mirrored before the exclusion be found and removed
+		}
 	}
 	if e.reg.dirty {
 		e.reg.dirty = false
@@ -376,7 +423,7 @@ func (e *engine) deactivate(r *resource) {
 func (e *engine) watchLoop(ctx context.Context, r *resource, rv string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		timeout := int64(300 + rand.IntN(300)) // spread reconnects across 5-10 minutes
+		timeout := int64(1800 + rand.IntN(1800)) // resumes from rv, so a reconnect costs one request; spread over 30-60 minutes
 		w, err := e.dyn.Resource(r.gvr).Watch(ctx, metav1.ListOptions{
 			ResourceVersion: rv, AllowWatchBookmarks: true, TimeoutSeconds: &timeout,
 		})
@@ -419,6 +466,9 @@ func (e *engine) consume(r *resource, w watch.Interface, rv string) (string, boo
 			}
 			e.handle(r, u, ev.Type == watch.Deleted, true)
 			rv = u.GetResourceVersion()
+			if discoveryTriggers[r.id()] {
+				notify(e.rediscover)
+			}
 		case watch.Bookmark:
 			if u, ok := ev.Object.(*unstructured.Unstructured); ok {
 				rv = u.GetResourceVersion()
@@ -456,6 +506,7 @@ func (e *engine) resync(ctx context.Context, r *resource) string {
 			}
 		}
 		e.mu.Unlock()
+		releaseMemory()
 		return rv
 	}
 	return ""
@@ -498,6 +549,12 @@ func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool)
 func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live bool) string {
 	p := objPath(e.cfg.Cluster, r.namespaced, u.GetNamespace(), r.token, u.GetName())
 	skip := len(u.GetOwnerReferences()) > 0 // derived from a parent we already mirror
+	if r.namespaced && e.cfg.namespaceExcluded(u.GetNamespace()) {
+		skip = true
+	}
+	if r.gvr.Group == "" && r.gvr.Resource == "namespaces" && e.cfg.namespaceExcluded(u.GetName()) {
+		skip = true
+	}
 	if r.isSecret() && str(u.Object, "type") == "kubernetes.io/service-account-token" {
 		skip = true
 	}
@@ -580,6 +637,7 @@ func (e *engine) markLocked(p string, c change) {
 		c.op = 'A'
 	}
 	e.dirty[p] = c
+	notify(e.changed)
 }
 
 func (e *engine) writeIndexLocked(ns string) {
@@ -728,6 +786,13 @@ func (e *engine) runBackfill(ctx context.Context) error {
 		namespaces = []string{""} // cannot read namespaces: fall back to cluster-wide lists
 		slog.Warn("no access to namespaces; backfilling namespaced types cluster-wide")
 	}
+	kept := namespaces[:0]
+	for _, ns := range namespaces {
+		if ns == "" || !e.cfg.namespaceExcluded(ns) {
+			kept = append(kept, ns)
+		}
+	}
+	namespaces = kept
 	e.m.backfillNSTotal.Store(int64(len(namespaces)))
 	for i, ns := range namespaces {
 		for _, r := range namespaced {
@@ -776,10 +841,15 @@ func (e *engine) finishBackfill() {
 	e.mu.Lock()
 	stale := 0
 	for p, en := range e.entries {
-		if en.res != "" && e.backfilled[en.res] && !e.visited[p] && !e.touched[p] {
-			e.removeLocked(p, "")
-			stale++
+		switch {
+		case en.res != "" && e.backfilled[en.res] && !e.visited[p] && !e.touched[p]:
+		case e.excluded[en.res]:
+		case e.cfg.namespaceExcluded(pathNamespace(p)):
+		default:
+			continue
 		}
+		e.removeLocked(p, "")
+		stale++
 	}
 	for p := range e.aux {
 		if strings.HasSuffix(p, "/"+secretsIndexFile) {
@@ -794,28 +864,58 @@ func (e *engine) finishBackfill() {
 	e.final = "initial sync complete"
 	tracked := len(e.entries)
 	e.mu.Unlock()
+	notify(e.changed)
 	e.m.backfillComplete.Store(1)
 	slog.Info("backfill complete", "objects", tracked, "staleRemoved", stale)
+	releaseMemory()
 }
 
 // ---- committing ----
 
+// commitLoop sleeps until something changes. It then waits for changes to
+// settle (CommitDelay after the last one, at most CommitMaxDelay after the first),
+// so a Helm upgrade touching many objects becomes one commit. Failed pushes are
+// retried with backoff. Nothing runs while the cluster is quiet.
 func (e *engine) commitLoop(ctx context.Context) {
-	t := time.NewTicker(e.cfg.CommitInterval)
-	defer t.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+	var first, holdUntil time.Time
+	backoff := e.cfg.CommitDelay
+	schedule := func() {
+		at := time.Now().Add(e.cfg.CommitDelay)
+		if limit := first.Add(e.cfg.CommitMaxDelay); at.After(limit) {
+			at = limit
+		}
+		if at.Before(holdUntil) {
+			at = holdUntil
+		}
+		timer.Reset(time.Until(at))
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
-			e.flush(ctx)
+		case <-e.changed:
+			if first.IsZero() {
+				first = time.Now()
+			}
+			schedule()
+		case <-timer.C:
+			if err := e.flush(ctx); err != nil {
+				holdUntil = time.Now().Add(backoff)
+				backoff = min(backoff*2, 5*time.Minute)
+				schedule()
+				continue
+			}
+			first, holdUntil, backoff = time.Time{}, time.Time{}, e.cfg.CommitDelay
 		}
 	}
 }
 
 // flush commits everything changed since the last successful push, on top of the
-// latest remote head, and pushes. Failed changes are retried on the next tick.
-func (e *engine) flush(ctx context.Context) {
+// latest remote head, and pushes. On failure the changes are kept for the next try.
+func (e *engine) flush(ctx context.Context) error {
 	e.flushMu.Lock()
 	defer e.flushMu.Unlock()
 
@@ -823,14 +923,14 @@ func (e *engine) flush(ctx context.Context) {
 	idle := len(e.dirty) == 0 && len(e.unpushed) == 0 && e.final == ""
 	e.mu.Unlock()
 	if idle {
-		return
+		return nil
 	}
 
 	head, err := e.git.fetch(ctx)
 	if err != nil {
 		e.m.pushFailures.Add(1)
 		slog.Warn("git fetch failed; will retry", "err", err)
-		return
+		return err
 	}
 
 	e.mu.Lock()
@@ -864,13 +964,26 @@ func (e *engine) flush(ctx context.Context) {
 		e.mu.Unlock()
 		e.m.pushFailures.Add(1)
 		slog.Warn("commit/push failed; will retry", "changes", len(changes), "err", err)
-		return
+		return err
 	}
 	if committed {
 		e.m.commits.Add(1)
 		e.m.lastPush.Store(time.Now().Unix())
 		slog.Info("pushed", "changes", len(changes), "note", note)
+		e.git.compact(ctx)
 	}
+	releaseMemory()
+	return nil
+}
+
+// pathNamespace returns the namespace directory of a repo path
+// (<cluster>/<namespace>/<file>), or "" for cluster-scoped and helper files.
+func pathNamespace(p string) string {
+	parts := strings.Split(p, "/")
+	if len(parts) != 3 || parts[1] == clusterScopedDir {
+		return ""
+	}
+	return parts[1]
 }
 
 func (e *engine) message(paths []string, changes map[string]change, note string) string {
