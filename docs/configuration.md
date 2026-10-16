@@ -9,19 +9,58 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | Variable | Default | |
 |---|---|---|
 | `PICKLE_CLUSTER` | required | Root directory in the repo (`a-z 0-9 -`) |
-| `PICKLE_GIT_URL` | required | `git@host:path`, `ssh://...` or `https://...` |
+| `PICKLE_GIT_URL` | required | `git@host:path`, `ssh://...` or `https://...`, never with credentials in it |
 | `PICKLE_GIT_BRANCH` | `main` | Created on first push |
-| `PICKLE_COMMIT_INTERVAL` | `13s` | |
+| `PICKLE_COMMIT_DELAY` | `10s` | Commit once changes have been quiet this long |
+| `PICKLE_COMMIT_MAX_DELAY` | `1m` | Commit at the latest this long after the first pending change |
+| `PICKLE_EXCLUDE` | empty | Types never mirrored; see [Excluding](#excluding) |
+| `PICKLE_EXCLUDE_NAMESPACES` | empty | Namespaces never mirrored; shell patterns like `tmp-*` |
+| `PICKLE_REDISCOVERY_INTERVAL` | `off` | Optional timer for picking up new types; at least `1m` |
 | `PICKLE_PAGE_SIZE` | `50` | Objects per LIST page |
 | `PICKLE_PAGE_PAUSE` | `200ms` | Pause between pages |
 | `PICKLE_QPS` / `PICKLE_BURST` | `5` / `10` | API rate limit |
-| `PICKLE_REDISCOVERY_INTERVAL` | `10m` | How often new types are picked up |
+| `PICKLE_GIT_COMPACT_EVERY` | `256` | Commits between local clone compactions |
+| `PICKLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `PICKLE_METRICS_ADDR` | `:9090` | `/metrics` and `/healthz` |
 | `PICKLE_GIT_SSH_USER` | `git` | |
 | `PICKLE_GIT_USERNAME` | `pickle` | HTTPS username |
 | `PICKLE_GIT_AUTHOR_NAME` | `pickle` | |
 | `PICKLE_GIT_AUTHOR_EMAIL` | `pickle@<cluster>.local` | |
-| `PICKLE_REPO_DIR` | `/data/repo` | Local clone |
+| `PICKLE_REPO_DIR` | `/data/repo` | Local clone. Must be empty or a pickle clone; anything else is refused, never deleted |
+| `GOMEMLIMIT` | the memory limit | Set from `limits.memory` by the manifests, so the GC works harder before the container is OOM-killed |
+
+`PICKLE_COMMIT_INTERVAL` from 1.0.0 still works as `PICKLE_COMMIT_DELAY`, with a warning in the log.
+
+In Helm, these map to `config.*` and `git.*` in [`values.yaml`](../helm/pickle/values.yaml); anything else can go in `extraEnv`.
+
+## Excluding
+
+`PICKLE_EXCLUDE` takes a comma-separated list. Each entry is one of:
+
+| Entry | Excludes |
+|---|---|
+| `IPAMBlock` | That kind (or plural resource name) in every API group |
+| `IPAMBlock.crd.projectcalico.org` | That kind (or plural) in one group; use `core` for the core group, e.g. `secrets.core` |
+| `*.crd.projectcalico.org` | Every type of one group |
+
+```yaml
+PICKLE_EXCLUDE: "IPAMBlock,BlockAffinity"
+PICKLE_EXCLUDE_NAMESPACES: "scratch,tmp-*"
+```
+
+With Helm:
+
+```yaml
+config:
+  exclude:
+    - IPAMBlock
+  excludeNamespaces:
+    - tmp-*
+```
+
+Excluded types are never watched or listed, so they cost nothing. Excluded namespaces are skipped in the backfill, and their events are dropped, including the Namespace object itself. Files mirrored before an exclusion are removed on the next start, in the `initial sync complete` commit.
+
+These come on top of the built-in exclusions in [how it works](how-it-works.md#skipped).
 
 ## Git credentials
 

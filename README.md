@@ -56,11 +56,11 @@ M payments/deployment-payments-api.yaml     [kubectl-edit]
 ```mermaid
 flowchart LR
     API[(Kubernetes API)] -- watch, read-only --> P[🥒 pickle]
-    P -- commit every 13s --> GIT[(Git)]
+    P -- commit when changes settle --> GIT[(Git)]
     GIT -. restore day .-> NEW[(new cluster)]
 ```
 
-One watch per resource type, plus a slow, rate-limited backfill of what already exists. Status updates never cause commits, deletions are mirrored, and several clusters can share one branch. Details: [docs/how-it-works.md](docs/how-it-works.md).
+One watch per resource type, plus a slow, rate-limited backfill of what already exists. Nothing polls: commits happen when changes settle, and new CRDs are picked up the moment they appear. Status updates never cause commits, deletions are mirrored, and several clusters can share one branch. Noisy types like `IPAMBlock` can be excluded with `PICKLE_EXCLUDE`. Details: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Quick start
 
@@ -77,7 +77,7 @@ ssh-keyscan gitlab.example.com > known_hosts
 ### Helm
 
 ```bash
-helm install pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle --version 1.0.0 -n pickle --create-namespace --set cluster=stg --set git.url=git@gitlab.example.com:devops/cluster-state.git --set-file git.sshPrivateKey=./pickle_deploy_key --set-file git.knownHosts=./known_hosts
+helm install pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle --version 1.0.1 -n pickle --create-namespace --set cluster=stg --set git.url=git@gitlab.example.com:devops/cluster-state.git --set-file git.sshPrivateKey=./pickle_deploy_key --set-file git.knownHosts=./known_hosts
 ```
 
 ### Plain manifests
@@ -122,7 +122,7 @@ go -C app test ./...
 ```
 
 ```bash
-docker build -t ghcr.io/hatam-abolghasemi/pickle:1.0.0 app/
+docker build -t ghcr.io/hatam-abolghasemi/pickle:1.0.1 app/
 ```
 
 ## Contributing
