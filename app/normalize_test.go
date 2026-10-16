@@ -114,3 +114,21 @@ func TestMaskSecret(t *testing.T) {
 		t.Fatal("stringData must be dropped")
 	}
 }
+
+func TestMaskSecretFailsClosed(t *testing.T) {
+	n := normalize(obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, immutable: true, metadata: {name: db, namespace: p},
+		data: {A: c2VjcmV0}, futureField: {token: plain}}`))
+	maskSecret(n)
+	if _, ok := n.Object["futureField"]; ok {
+		t.Fatal("unknown Secret fields must be dropped")
+	}
+	if n.Object["immutable"] != true || n.Object["type"] != "Opaque" {
+		t.Fatalf("known fields must stay: %v", n.Object)
+	}
+
+	odd := normalize(obj(t, `{apiVersion: v1, kind: Secret, metadata: {name: db, namespace: p}, data: plainstring}`))
+	maskSecret(odd)
+	if _, ok := odd.Object["data"]; ok {
+		t.Fatal("data that is not a map must be dropped, not written")
+	}
+}
