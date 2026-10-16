@@ -8,7 +8,7 @@
 
 ## Secrets
 
-Values are replaced by `****` in memory, before rendering, so they never touch disk or Git:
+Values are replaced by `****` in memory, before rendering, so they never touch disk or Git. Masking fails closed: only `apiVersion`, `kind`, `metadata`, `type`, `immutable` and `data` are written, so a field pickle doesn't know about can never carry a value into Git:
 
 ```yaml
 # last-manager: kubectl-edit (Update)
@@ -43,10 +43,18 @@ payments-db:
 Pickle's ServiceAccount can read Secret values from the API, even though pickle never writes them anywhere. Anyone able to run code in the pod could use that. To narrow it:
 
 - Allow only cluster admins to `exec` into or modify the `pickle` namespace.
-- Add a network policy limiting the pod to the API server and your Git host.
+- Enable the chart's NetworkPolicy (`networkPolicy.enabled`), which limits the pod to the API server, your Git host and DNS.
+- Exclude what you don't need mirrored, e.g. `PICKLE_EXCLUDE: "secrets.core"`. RBAC can't subtract from a wildcard, so pickle can still read them, but it never lists or watches them.
 
 ## Also
 
 - ConfigMaps are mirrored as-is, so a password stored in one ends up in Git.
 - The repo maps your whole infrastructure. Keep it private.
 - Prefer a deploy key scoped to one repo over a personal token.
+- Credentials never go in the URL: pickle refuses a `PICKLE_GIT_URL` containing a username, password or token, and refuses to send a token over plain `http://`.
+
+## Supply chain
+
+- Release images are built with SBOM and provenance attestations.
+- Every GitHub Action is pinned to a commit SHA; Dependabot keeps the pins current.
+- CI runs `govulncheck` on every change.

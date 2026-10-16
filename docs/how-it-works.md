@@ -2,20 +2,22 @@
 
 ## Startup
 
-1. **Discover** every resource type that supports `list` and `watch`, minus noise and subresources.
+1. **Discover** every resource type that supports `list` and `watch`, minus noise, subresources and `PICKLE_EXCLUDE`.
 2. **Probe** each type with a 1-item `LIST`. Failures are skipped and listed in `<cluster>/_unreadable.txt` with the reason.
 3. **Watch** each readable type cluster-wide, from now on.
-4. **Backfill** existing objects: cluster-scoped first, then each namespace alphabetically, `PICKLE_PAGE_SIZE` per page with `PICKLE_PAGE_PAUSE` between pages, at most `PICKLE_QPS` requests per second.
-5. **Clean up** files of objects deleted while pickle was down. This applies only to fully listed types, so a permission hiccup never wipes files.
+4. **Backfill** existing objects: cluster-scoped first, then each namespace alphabetically (minus `PICKLE_EXCLUDE_NAMESPACES`), `PICKLE_PAGE_SIZE` per page with `PICKLE_PAGE_PAUSE` between pages, at most `PICKLE_QPS` requests per second.
+5. **Clean up** files of objects deleted while pickle was down (only for fully listed types, so a permission hiccup never wipes files), and files of anything now excluded.
 6. **Push** an `initial sync complete` commit.
 
 Watches start before the backfill because a long backfill outlives etcd's compaction window (~5 minutes): a watch started afterwards would fail with `410 Gone`. Objects a watch already wrote are skipped by the backfill, since a backfill page is always older.
 
 Afterwards:
 
-- Watches reconnect every 5–10 minutes from the last seen resourceVersion.
+- Watches reconnect every 30–60 minutes from the last seen resourceVersion. A reconnect is one request, not a relist.
 - An expired watch (`410 Gone`) triggers a full relist of that type.
-- Discovery reruns every `PICKLE_REDISCOVERY_INTERVAL`, picking up new CRDs without a restart.
+- Any change to a CustomResourceDefinition or APIService triggers a rediscovery 5 seconds later, so new CRDs are picked up within seconds and nothing polls for them. Set `PICKLE_REDISCOVERY_INTERVAL` to also rediscover on a timer.
+
+Nothing runs on a timer while the cluster is quiet: no commit ticks and no discovery polling.
 
 ## Normalization
 
@@ -55,6 +57,7 @@ The user and source IP aren't stored on objects; only API server audit logs have
 - **Derived objects:** anything with `ownerReferences` (ReplicaSets, Pods, Jobs of CronJobs, Applications from ApplicationSets). Their parent is mirrored.
 - **Runtime churn:** events, leases, endpoints, endpointslices, controllerrevisions, volumeattachments, csinodes, csistoragecapacities, certificatesigningrequests, ipaddresses, resourceslices, componentstatuses, and the `metrics.k8s.io` group.
 - **ServiceAccount token Secrets**, which the cluster regenerates.
+- **Your exclusions:** `PICKLE_EXCLUDE` and `PICKLE_EXCLUDE_NAMESPACES`, see [configuration](configuration.md#excluding).
 
 ## Layout
 
@@ -75,4 +78,12 @@ When two API groups define the same kind, the first keeps the short prefix (`cer
 
 ## Committing
 
-Every `PICKLE_COMMIT_INTERVAL`, if anything changed: fetch, point the index at the remote head, stage only pickle's changed paths, commit, push. A failed push is retried on the next tick on top of the new head, so clusters sharing a branch never conflict. On `SIGTERM`, pickle pushes once more before exiting.
+A change wakes the committer, which waits until changes have been quiet for `PICKLE_COMMIT_DELAY`, but never longer than `PICKLE_COMMIT_MAX_DELAY` after the first one. A Helm upgrade touching 30 objects becomes one commit. Then: fetch the remote head, point the index at it, stage only pickle's changed paths, commit, push. A failed push is retried with backoff (up to 5 minutes) on top of the new head, so clusters sharing a branch never conflict. On `SIGTERM`, pickle pushes once more before exiting.
+
+## Local clone
+
+The clone is shallow: pickle fetches only the branch tip, because all it needs is something to build the next commit on. History is never downloaded, kept on disk or held in memory, however long the shared branch gets.
+
+Each commit still leaves a few objects behind. Every `PICKLE_GIT_COMPACT_EVERY` commits, pickle builds a fresh shallow store next to the old one, swaps it in and deletes the old one. If anything fails, the old store is kept. Without this, the store would slowly fill the `emptyDir` until the pod is evicted.
+
+The first clone writes a marker inside `.git` and removes it once the checkout is complete. An interrupted clone is redone on the next start. A `PICKLE_REPO_DIR` that is non-empty and not a pickle clone is refused, never deleted.

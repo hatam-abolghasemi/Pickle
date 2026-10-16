@@ -13,10 +13,13 @@ Prometheus format on `:9090/metrics`, exposed by the `pickle` Service.
 | `pickle_commits_total` | Commits pushed |
 | `pickle_push_failures_total` | Failed push cycles (retried) |
 | `pickle_last_push_timestamp_seconds` | Last successful push |
-| `pickle_watch_reconnects_total` | Normal watch reconnects |
+| `pickle_watch_reconnects_total` | Normal watch reconnects (every 30–60 min per type) |
 | `pickle_resyncs_total` | Relists after an expired watch |
 | `pickle_resources_watched` | Types watched |
 | `pickle_resources_forbidden` | Types listed in `_unreadable.txt` |
+| `pickle_go_heap_live_bytes` | Heap held by live objects after the last GC |
+| `pickle_go_memory_mapped_bytes` / `_released_bytes` | Memory mapped by the Go runtime / already returned to the OS |
+| `pickle_go_goroutines` | About one per watched type |
 
 ### Alerts
 
@@ -54,17 +57,27 @@ sudo kubectl -n pickle logs -f deploy/pickle
 | `pushed changes=N` | A commit went out |
 | `commit/push failed; will retry` | Changes are kept and retried |
 | `new readable type resource=...` | A new type was picked up |
+| `excluded by PICKLE_EXCLUDE resource=...` | A type matched an exclusion |
+| `local git store compacted` | The local clone was replaced by a fresh shallow one |
 
 ## Troubleshooting
 
-**`_unreadable.txt` appeared.** Each line names a type and why. `forbidden`: a policy or ClusterRole blocks it. `discovery failed`: an aggregated API (e.g. metrics-server) is down. Once fixed, the type is picked up within `PICKLE_REDISCOVERY_INTERVAL` and the file disappears.
+**`_unreadable.txt` appeared.** Each line names a type and why. `forbidden`: a policy or ClusterRole blocks it. `discovery failed`: an aggregated API (e.g. metrics-server) is down. Once fixed, the type is picked up as soon as its APIService reports a change (or at the next `PICKLE_REDISCOVERY_INTERVAL`, if set) and the file disappears. For an authorization change that no object reflects, restart pickle or set an interval.
 
 **`known_hosts (required ...)`.** The `pickle-git` Secret lacks `known_hosts`; recreate it with `ssh-keyscan` output.
 
 **Slow backfill.** By design; live changes are captured from the start anyway. To speed it up, raise `PICKLE_QPS` and `PICKLE_PAGE_SIZE` or lower `PICKLE_PAGE_PAUSE`.
 
-**An object is missing.** It probably has `ownerReferences`, or its type is [skipped](how-it-works.md#skipped).
+**An object is missing.** It probably has `ownerReferences`, its type or namespace is [skipped](how-it-works.md#skipped), or it matches `PICKLE_EXCLUDE`.
+
+**A type is just noise in Git.** Exclude it, e.g. `PICKLE_EXCLUDE: "IPAMBlock"`. Its files go away on the next start.
+
+**`PICKLE_REPO_DIR ... is not empty and is not a pickle clone`.** The directory holds something pickle didn't create. Point it at an empty directory; pickle won't delete it for you.
 
 ## Resources
 
-Requests 20m CPU / 64Mi, limits 500m / 512Mi. Pickle keeps a 32-byte hash per object, not the objects; most memory is the Git index.
+Requests 20m CPU / 64Mi, limits 500m / 512Mi.
+
+Pickle keeps a 32-byte hash per object, not the objects. The rest of its memory is the Go runtime and client-go (a fixed floor of roughly 20–30 MiB), a git object cache capped at 8 MiB, and short bursts during backfill, relists and pushes. After each burst the freed memory is returned to the OS. `GOMEMLIMIT` is set from the memory limit, so the GC works harder before the container would be OOM-killed.
+
+The container's working set also counts the kernel's page cache for files in the `emptyDir`. That cache is reclaimable, so compare `container_memory_rss` with `pickle_go_heap_live_bytes` to see what pickle itself holds.
