@@ -147,16 +147,27 @@ func stringMap(m map[string]string) map[string]any {
 // show up as ordinary diff lines.
 const secretMask = "****"
 
+// secretFields are the only top-level Secret fields that are ever written.
+// Anything else, including fields a future API version might add, is dropped:
+// masking fails closed rather than trusting a field to be harmless.
+var secretFields = map[string]bool{"apiVersion": true, "kind": true, "metadata": true, "type": true, "immutable": true, "data": true}
+
 func maskSecret(n *unstructured.Unstructured) {
-	data, _, _ := unstructured.NestedMap(n.Object, "data")
-	if len(data) > 0 {
-		masked := make(map[string]any, len(data))
-		for k := range data {
-			masked[k] = secretMask
+	for k := range n.Object {
+		if !secretFields[k] {
+			delete(n.Object, k)
 		}
-		n.Object["data"] = masked
 	}
-	delete(n.Object, "stringData")
+	data, ok := n.Object["data"].(map[string]any)
+	if !ok || len(data) == 0 {
+		delete(n.Object, "data")
+		return
+	}
+	masked := make(map[string]any, len(data))
+	for k := range data {
+		masked[k] = secretMask
+	}
+	n.Object["data"] = masked
 }
 
 // render produces the exact bytes written to the repo.
