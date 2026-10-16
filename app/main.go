@@ -22,6 +22,7 @@ func main() {
 	if err != nil {
 		fatal("config", err)
 	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	rc, err := restConfig()
 	if err != nil {
@@ -30,6 +31,9 @@ func main() {
 	rc.QPS = cfg.QPS
 	rc.Burst = cfg.Burst
 	rc.UserAgent = "pickle"
+	for _, d := range cfg.Deprecated {
+		slog.Warn(d)
+	}
 
 	dyn, err := dynamic.NewForConfig(rc)
 	if err != nil {
