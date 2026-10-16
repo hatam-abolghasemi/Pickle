@@ -2,8 +2,8 @@ apiVersion: v2
 name: pickle
 description: Keeps a clean, re-appliable copy of every Kubernetes object in Git.
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 1.0.1
+appVersion: "1.0.1"
 home: https://github.com/hatam-abolghasemi/pickle
 icon: https://raw.githubusercontent.com/hatam-abolghasemi/pickle/main/docs/assets/pickle.svg
 sources:
