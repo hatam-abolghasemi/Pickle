@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	rtmetrics "runtime/metrics"
 	"sync/atomic"
 	"time"
 )
@@ -47,17 +48,40 @@ func (m *metrics) write(w http.ResponseWriter) {
 	g("pickle_commits_total", "Commits pushed.", "counter", m.commits.Load())
 	g("pickle_push_failures_total", "Failed fetch/commit/push cycles.", "counter", m.pushFailures.Load())
 	g("pickle_last_push_timestamp_seconds", "Unix time of the last successful push.", "gauge", m.lastPush.Load())
-	g("pickle_watch_reconnects_total", "Watch streams reopened (normal, every 5-10 minutes per type).", "counter", m.watchReconnects.Load())
+	g("pickle_watch_reconnects_total", "Watch streams reopened (normal, every 30-60 minutes per type).", "counter", m.watchReconnects.Load())
 	g("pickle_resyncs_total", "Full relists of a type after its watch expired (410 Gone).", "counter", m.resyncs.Load())
 	g("pickle_resources_watched", "Resource types being watched.", "gauge", m.resourcesWatched.Load())
 	g("pickle_resources_forbidden", "Discovered resource types pickle cannot read (listed in _unreadable.txt).", "gauge", m.resourcesForbidden.Load())
+
+	samples := []rtmetrics.Sample{
+		{Name: "/gc/heap/live:bytes"},
+		{Name: "/memory/classes/total:bytes"},
+		{Name: "/memory/classes/heap/released:bytes"},
+		{Name: "/sched/goroutines:goroutines"},
+	}
+	rtmetrics.Read(samples)
+	u := func(i int) int64 {
+		if samples[i].Value.Kind() != rtmetrics.KindUint64 {
+			return 0
+		}
+		return int64(samples[i].Value.Uint64())
+	}
+	g("pickle_go_heap_live_bytes", "Heap memory in use by live objects after the last GC.", "gauge", u(0))
+	g("pickle_go_memory_mapped_bytes", "Memory mapped by the Go runtime, including memory released back to the OS.", "gauge", u(1))
+	g("pickle_go_memory_released_bytes", "Memory the Go runtime has returned to the OS.", "gauge", u(2))
+	g("pickle_go_goroutines", "Live goroutines (about one per watched type).", "gauge", u(3))
 }
 
 func serveMetrics(addr string, m *metrics) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) { m.write(w) })
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) { m.write(w) })
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok\n")) })
+	srv := &http.Server{
+		Addr: addr, Handler: mux,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 8 << 10,
+	}
 	if err := srv.ListenAndServe(); err != nil {
 		slog.Error("metrics server", "err", err)
 	}
