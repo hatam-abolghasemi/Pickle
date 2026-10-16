@@ -2,7 +2,7 @@
 cluster: ""
 
 git:
-  # Required: git@host:path.git, ssh://... or https://...
+  # Required: git@host:path.git, ssh://... or https://... (never with credentials in it).
   url: ""
   branch: main
   # Use your own Secret (keys: ssh-privatekey + known_hosts, or token).
@@ -18,14 +18,34 @@ git:
   authorName: pickle
   # Defaults to pickle@<cluster>.local.
   authorEmail: ""
+  # Replace the local clone with a fresh shallow one after this many commits.
+  compactEvery: 256
 
 config:
-  commitInterval: 13s
+  # Commit once changes have been quiet this long...
+  commitDelay: 10s
+  # ...but never later than this after the first pending change.
+  commitMaxDelay: 1m
+  # New types are picked up from CRD/APIService events. Set e.g. 30m to also
+  # rediscover on a timer; "off" disables the timer.
+  rediscoveryInterval: "off"
+  # Types never mirrored, on top of the built-in runtime noise:
+  # Kind (any group), Kind.group or plural.group, or *.group for a whole group.
+  # Files mirrored before an exclusion are removed on the next start.
+  exclude: []
+  # - IPAMBlock
+  # - "*.crd.projectcalico.org"
+  # Namespaces never mirrored (shell patterns like tmp-*), including their Namespace object.
+  excludeNamespaces: []
   pageSize: 50
   pagePause: 200ms
   qps: 5
   burst: 10
-  rediscoveryInterval: 10m
+  # debug, info, warn or error.
+  logLevel: info
+
+# Extra environment variables for the container.
+extraEnv: []
 
 image:
   repository: ghcr.io/hatam-abolghasemi/pickle
@@ -62,6 +82,20 @@ resources:
 
 # Size limit of the emptyDir holding the local clone.
 dataSizeLimit: 2Gi
+
+# Restrict pickle's traffic to the API server, your Git host and DNS.
+networkPolicy:
+  enabled: false
+  # Required when enabled: API server endpoint IPs (not the kubernetes Service IP).
+  apiServer:
+    cidrs: []
+    port: 6443
+  # Required when enabled: where your Git host lives.
+  git:
+    cidrs: []
+    ports: [22, 443]
+  # Who may scrape :9090; empty allows any pod.
+  metricsFrom: []
 
 nodeSelector: {}
 tolerations: []

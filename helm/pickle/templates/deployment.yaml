@@ -29,6 +29,8 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "pickle.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      enableServiceLinks: false
       terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -51,9 +53,17 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "pickle.fullname" . }}
+          env:
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: metrics
-              containerPort: 9090
+              containerPort: {{ .Values.service.port }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -64,6 +74,7 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            runAsNonRoot: true
             capabilities:
               drop: [ALL]
           volumeMounts:

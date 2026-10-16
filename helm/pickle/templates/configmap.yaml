@@ -15,9 +15,15 @@ data:
   {{- with .Values.git.authorEmail }}
   PICKLE_GIT_AUTHOR_EMAIL: {{ . | quote }}
   {{- end }}
-  PICKLE_COMMIT_INTERVAL: {{ .Values.config.commitInterval | quote }}
+  PICKLE_GIT_COMPACT_EVERY: {{ .Values.git.compactEvery | quote }}
+  PICKLE_COMMIT_DELAY: {{ .Values.config.commitDelay | quote }}
+  PICKLE_COMMIT_MAX_DELAY: {{ .Values.config.commitMaxDelay | quote }}
+  PICKLE_REDISCOVERY_INTERVAL: {{ .Values.config.rediscoveryInterval | quote }}
+  PICKLE_EXCLUDE: {{ join "," .Values.config.exclude | quote }}
+  PICKLE_EXCLUDE_NAMESPACES: {{ join "," .Values.config.excludeNamespaces | quote }}
   PICKLE_PAGE_SIZE: {{ .Values.config.pageSize | quote }}
   PICKLE_PAGE_PAUSE: {{ .Values.config.pagePause | quote }}
   PICKLE_QPS: {{ .Values.config.qps | quote }}
   PICKLE_BURST: {{ .Values.config.burst | quote }}
-  PICKLE_REDISCOVERY_INTERVAL: {{ .Values.config.rediscoveryInterval | quote }}
+  PICKLE_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  PICKLE_METRICS_ADDR: {{ printf ":%v" .Values.service.port | quote }}
