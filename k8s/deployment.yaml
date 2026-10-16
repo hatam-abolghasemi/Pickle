@@ -17,6 +17,8 @@ spec:
         prometheus.io/port: "9090"
     spec:
       serviceAccountName: pickle
+      automountServiceAccountToken: true
+      enableServiceLinks: false
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -26,9 +28,13 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
       - name: pickle
-        image: ghcr.io/hatam-abolghasemi/pickle:1.0.0
+        image: ghcr.io/hatam-abolghasemi/pickle:1.0.1
         envFrom:
         - configMapRef: {name: pickle}
+        env:
+        - name: GOMEMLIMIT
+          valueFrom:
+            resourceFieldRef: {resource: limits.memory}
         ports:
         - {name: metrics, containerPort: 9090}
         livenessProbe:
@@ -40,6 +46,7 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+          runAsNonRoot: true
           capabilities: {drop: [ALL]}
         volumeMounts:
         - {name: data, mountPath: /data}

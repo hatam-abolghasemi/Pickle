@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.networkPolicy.apiServer.cidrs }}
+{{- fail "networkPolicy.apiServer.cidrs is required when networkPolicy.enabled (API server endpoint IPs, e.g. from: kubectl get endpoints kubernetes)" }}
+{{- end }}
+{{- if not .Values.networkPolicy.git.cidrs }}
+{{- fail "networkPolicy.git.cidrs is required when networkPolicy.enabled" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pickle.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pickle.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pickle.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - port: metrics
+          protocol: TCP
+      {{- with .Values.networkPolicy.metricsFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    - to:
+        {{- range .Values.networkPolicy.apiServer.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.networkPolicy.apiServer.port }}
+          protocol: TCP
+    - to:
+        {{- range .Values.networkPolicy.git.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .Values.networkPolicy.git.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
