@@ -21,7 +21,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Watches reconnect every 30–60 minutes instead of every 5–10.
 - The local clone is shallow and compacts itself, so history is never downloaded and the `emptyDir` no longer grows over time.
 - Freed memory is returned to the OS after backfill, relists and pushes; the git object cache is capped at 8 MiB; `GOMEMLIMIT` follows the memory limit.
-- Go 1.27, client-go 0.37.1, go-git 5.19.3, golang.org/x/crypto 0.56.0, distroless Debian 13 base image.
+- Go 1.27, client-go 0.37.1, go-git 5.19.3, golang.org/x/crypto 0.56.0, golang.org/x/net 0.60.0, distroless Debian 13 base image.
 - GitHub Actions pinned to commit SHAs, with least-privilege permissions per job.
 
 ### Deprecated
