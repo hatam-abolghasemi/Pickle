@@ -21,9 +21,10 @@ type metrics struct {
 	written        atomic.Int64
 	deleted        atomic.Int64
 
-	commits      atomic.Int64
-	pushFailures atomic.Int64
-	lastPush     atomic.Int64
+	commits       atomic.Int64
+	pushFailures  atomic.Int64
+	pushConflicts atomic.Int64
+	lastPush      atomic.Int64
 
 	watchReconnects atomic.Int64
 	resyncs         atomic.Int64
@@ -47,6 +48,7 @@ func (m *metrics) write(w http.ResponseWriter) {
 	g("pickle_objects_deleted_total", "Object files removed.", "counter", m.deleted.Load())
 	g("pickle_commits_total", "Commits pushed.", "counter", m.commits.Load())
 	g("pickle_push_failures_total", "Failed fetch/commit/push cycles.", "counter", m.pushFailures.Load())
+	g("pickle_push_conflicts_total", "Pushes that found another cluster had pushed first, and went again on top of it.", "counter", m.pushConflicts.Load())
 	g("pickle_last_push_timestamp_seconds", "Unix time of the last successful push.", "gauge", m.lastPush.Load())
 	g("pickle_watch_reconnects_total", "Watch streams reopened (normal, every 30-60 minutes per type).", "counter", m.watchReconnects.Load())
 	g("pickle_resyncs_total", "Full relists of a type after its watch expired (410 Gone).", "counter", m.resyncs.Load())

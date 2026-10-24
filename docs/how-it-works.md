@@ -78,7 +78,7 @@ When two API groups define the same kind, the first keeps the short prefix (`cer
 
 ## Committing
 
-A change wakes the committer, which waits until changes have been quiet for `PICKLE_COMMIT_DELAY`, but never longer than `PICKLE_COMMIT_MAX_DELAY` after the first one. A Helm upgrade touching 30 objects becomes one commit. Then: fetch the remote head, point the index at it, stage only pickle's changed paths, commit, push. A failed push is retried with backoff (up to 5 minutes) on top of the new head, so clusters sharing a branch never conflict. On `SIGTERM`, pickle pushes once more before exiting.
+A change wakes the committer, which waits until changes have been quiet for `PICKLE_COMMIT_DELAY`, but never longer than `PICKLE_COMMIT_MAX_DELAY` after the first one. A Helm upgrade touching 30 objects becomes one commit. Then: fetch the remote head and build a commit on top of it that rewrites only the trees along pickle's changed paths, so a commit costs the same in a small repo as in a huge one. If another cluster pushed in between, pickle takes the new remote head, puts its own `<cluster>/` directory on top and pushes again after a short random pause; since each cluster only ever writes its own directory, this never needs a merge and never touches another cluster's files. Other failures (Git host unreachable, auth) are retried with backoff, up to 5 minutes. On `SIGTERM`, pickle pushes once more before exiting.
 
 ## Local clone
 

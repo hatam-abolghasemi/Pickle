@@ -4,6 +4,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-24
+
+### Added
+
+- `pickle_push_conflicts_total`: pushes that found another cluster had pushed to the branch first.
+
+### Fixed
+
+- Clusters sharing a branch no longer fail with `object not found` or `incorrect old value provided`. When another cluster pushes first, this cluster's directory is put on top of the new head and pushed again within seconds, instead of waiting for the next retry with backoff.
+- Commits are built from only the changed paths instead of through the git index, so their cost no longer grows with the size of the repo: 900 changes in a 40,000-file repo take well under a second instead of minutes. Watches and backfill are no longer held up while a large commit is being built.
+
 ## [1.0.2] - 2026-10-24
 
 ### Added
@@ -56,7 +67,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hatam-abolghasemi/pickle/releases/tag/v1.0.0

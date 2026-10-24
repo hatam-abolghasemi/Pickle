@@ -12,6 +12,7 @@ Prometheus format on `:9090/metrics`, exposed by the `pickle` Service.
 | `pickle_objects_written_total` / `_deleted_total` | Files written / removed |
 | `pickle_commits_total` | Commits pushed |
 | `pickle_push_failures_total` | Failed push cycles (retried) |
+| `pickle_push_conflicts_total` | Pushes where another cluster had pushed to the branch first (handled by pushing again on top) |
 | `pickle_last_push_timestamp_seconds` | Last successful push |
 | `pickle_watch_reconnects_total` | Normal watch reconnects (every 30–60 min per type) |
 | `pickle_resyncs_total` | Relists after an expired watch |
