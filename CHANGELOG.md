@@ -4,6 +4,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-24
+
 ### Added
 
 - `PICKLE_COLOR` (Helm: `color`): a colored marker in front of every commit subject, e.g. `🟢 [stg] 3 added`, so commits from different clusters are easy to tell apart.
@@ -54,6 +56,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hatam-abolghasemi/pickle/releases/tag/v1.0.0
