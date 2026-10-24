@@ -21,4 +21,16 @@ helm lint helm/pickle -f helm/values-sample.yaml
 
 ## Releases
 
-Tag `vX.Y.Z` on `main`. CI publishes the image to `ghcr.io/hatam-abolghasemi/pickle` and the chart to `oci://ghcr.io/hatam-abolghasemi/charts/pickle`.
+`CHANGELOG.md` is the only place a version is written. To release:
+
+1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a new empty `## [Unreleased]` above it.
+2. Update the compare links at the bottom of the changelog.
+3. Merge to `main`.
+
+When CI passes on `main`, the release workflow takes the newest `## [X.Y.Z] - YYYY-MM-DD` heading. If `vX.Y.Z` is not tagged yet, it publishes:
+
+- the image `ghcr.io/hatam-abolghasemi/pickle` as `X.Y.Z`, `X.Y` and `latest`
+- the chart `oci://ghcr.io/hatam-abolghasemi/charts/pickle` with version and appVersion `X.Y.Z`
+- the GitHub release `vX.Y.Z`, with that changelog section as its notes
+
+Pushes without a new version heading release nothing. Don't put versions in `Chart.yaml`, manifests or docs; they are placeholders filled at release time.

@@ -20,6 +20,6 @@ body:
   - type: input
     attributes:
       label: Versions
-      placeholder: pickle 1.0.0, Kubernetes 1.31, Helm 3.16
+      placeholder: pickle X.Y.Z, Kubernetes X.Y, Helm X.Y
     validations:
       required: true

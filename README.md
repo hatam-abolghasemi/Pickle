@@ -77,12 +77,14 @@ ssh-keyscan gitlab.example.com > known_hosts
 ### Helm
 
 ```bash
-helm install pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle --version 1.0.1 -n pickle --create-namespace --set cluster=stg --set git.url=git@gitlab.example.com:devops/cluster-state.git --set-file git.sshPrivateKey=./pickle_deploy_key --set-file git.knownHosts=./known_hosts
+helm install pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle -n pickle --create-namespace --set cluster=stg --set git.url=git@gitlab.example.com:devops/cluster-state.git --set-file git.sshPrivateKey=./pickle_deploy_key --set-file git.knownHosts=./known_hosts
 ```
+
+This installs the newest release. Add `--version X.Y.Z` to pin one from the [changelog](CHANGELOG.md).
 
 ### Plain manifests
 
-Set `PICKLE_CLUSTER` and `PICKLE_GIT_URL` in [`k8s/configmap.yaml`](k8s/configmap.yaml), then:
+Set `PICKLE_CLUSTER` and `PICKLE_GIT_URL` in [`k8s/configmap.yaml`](k8s/configmap.yaml). [`k8s/deployment.yaml`](k8s/deployment.yaml) uses the `latest` image; replace it with a version from the [changelog](CHANGELOG.md) to pin one. Then:
 
 ```bash
 sudo kubectl apply -f k8s/namespace.yaml
@@ -122,7 +124,7 @@ go -C app test ./...
 ```
 
 ```bash
-docker build -t ghcr.io/hatam-abolghasemi/pickle:1.0.1 app/
+docker build -t ghcr.io/hatam-abolghasemi/pickle:dev app/
 ```
 
 ## Contributing
