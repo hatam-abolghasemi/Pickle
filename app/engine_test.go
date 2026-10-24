@@ -303,3 +303,16 @@ func TestDiscoveryTriggers(t *testing.T) {
 		t.Fatal("a written object must wake the commit loop")
 	}
 }
+
+func TestMessageColor(t *testing.T) {
+	changes := map[string]change{"stg/default/a.yaml": {op: 'A'}}
+	paths := []string{"stg/default/a.yaml"}
+	e := &engine{cfg: &config{Cluster: "stg"}}
+	if got := e.message(paths, changes, ""); !strings.HasPrefix(got, "[stg] 1 added\n") {
+		t.Fatalf("no color: %q", got)
+	}
+	e.cfg.Color = "🟢"
+	if got := e.message(paths, changes, ""); !strings.HasPrefix(got, "🟢 [stg] 1 added\n") {
+		t.Fatalf("with color: %q", got)
+	}
+}

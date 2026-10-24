@@ -1,4 +1,5 @@
 cluster: stg
+color: green
 git:
   url: git@gitlab.example.com:devops/cluster-state.git
   existingSecret: pickle-git

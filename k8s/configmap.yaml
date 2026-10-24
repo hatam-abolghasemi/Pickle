@@ -5,6 +5,7 @@ metadata:
   namespace: pickle
 data:
   PICKLE_CLUSTER: stg
+  PICKLE_COLOR: green
   PICKLE_GIT_URL: "git@gitlab.example.com:devops/cluster-state.git"
   PICKLE_GIT_BRANCH: main
   PICKLE_GIT_COMPACT_EVERY: "256"

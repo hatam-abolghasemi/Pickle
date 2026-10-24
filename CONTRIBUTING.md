@@ -9,7 +9,7 @@ go -C app test -race ./...
 ```
 
 ```bash
-helm lint helm/pickle -f helm/values-stg.yaml
+helm lint helm/pickle -f helm/values-sample.yaml
 ```
 
 ## Pull requests
