@@ -950,8 +950,10 @@ func (e *engine) flush(ctx context.Context) error {
 	committed, err := e.git.commit(head, paths, msg, note != "")
 	e.mu.Unlock()
 
+	conflicts := 0
 	if err == nil && committed {
-		err = e.git.push(ctx)
+		conflicts, err = e.git.push(ctx)
+		e.m.pushConflicts.Add(int64(conflicts))
 	}
 	if err != nil {
 		e.mu.Lock()
@@ -969,7 +971,7 @@ func (e *engine) flush(ctx context.Context) error {
 	if committed {
 		e.m.commits.Add(1)
 		e.m.lastPush.Store(time.Now().Unix())
-		slog.Info("pushed", "changes", len(changes), "note", note)
+		slog.Info("pushed", "changes", len(changes), "note", note, "conflicts", conflicts)
 		e.git.compact(ctx)
 	}
 	releaseMemory()

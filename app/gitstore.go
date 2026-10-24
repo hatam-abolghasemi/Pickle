@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,7 +18,7 @@ import (
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -24,18 +27,20 @@ import (
 )
 
 // gitStore owns the local clone. Several clusters may push to one branch, each
-// under its own directory, so every cycle rebuilds the commit on top of the
-// latest remote head and stages only this instance's changed paths.
+// under its own directory, so every cycle builds the commit on top of the latest
+// remote head, rewriting only the trees along this instance's changed paths.
+// If another cluster pushes first, this cluster's directory is grafted onto the
+// new remote head and pushed again; no merge is ever needed.
 //
 // The clone is shallow: pickle only ever needs the remote head to build on, so
 // history never has to be downloaded, kept on disk or held in memory. Objects
 // left behind by earlier cycles are dropped by compact.
 type gitStore struct {
 	repo        *git.Repository
-	wt          *git.Worktree
 	dir         string
 	url         string
 	branch      string
+	cluster     string
 	auth        transport.AuthMethod
 	authorName  string
 	authorEmail string
@@ -55,7 +60,7 @@ func openGitStore(cfg *config) (*gitStore, error) {
 		return nil, err
 	}
 	g := &gitStore{
-		dir: cfg.RepoDir, url: cfg.GitURL, branch: cfg.GitBranch, auth: auth,
+		dir: cfg.RepoDir, url: cfg.GitURL, branch: cfg.GitBranch, cluster: cfg.Cluster, auth: auth,
 		authorName: cfg.AuthorName, authorEmail: cfg.AuthorEmail, compactEvery: cfg.CompactEvery,
 	}
 	if g.compactEvery <= 0 {
@@ -84,8 +89,7 @@ func openGitStore(cfg *config) (*gitStore, error) {
 			return nil, err
 		}
 	}
-	g.wt, err = g.repo.Worktree()
-	return g, err
+	return g, nil
 }
 
 const (
@@ -221,17 +225,13 @@ func (g *gitStore) compact(ctx context.Context) {
 		return
 	}
 	repo, err := git.Open(g.storage(".git"), osfs.New(g.dir))
-	var wt *git.Worktree
-	if err == nil {
-		wt, err = repo.Worktree()
-	}
 	if err != nil {
 		os.RemoveAll(filepath.Join(g.dir, ".git"))
 		os.Rename(filepath.Join(g.dir, old), filepath.Join(g.dir, ".git"))
 		slog.Warn("git compaction rolled back", "err", err)
 		return
 	}
-	g.repo, g.wt = repo, wt
+	g.repo = repo
 	os.RemoveAll(filepath.Join(g.dir, old))
 	slog.Info("local git store compacted")
 }
@@ -304,36 +304,287 @@ func fetchHead(ctx context.Context, repo *git.Repository, branch string, auth tr
 	return ref.Hash(), nil
 }
 
-// commit points HEAD and the index at the remote head (worktree untouched), stages
-// exactly the given paths from disk and commits. Returns false if nothing changed.
+// commit builds a commit on top of head (ZeroHash: the first commit) in which
+// each path holds its file from disk, or is gone if the file is gone, and points
+// the branch at it. Only the trees along the changed paths are rewritten, so the
+// cost follows the size of the change, not of the repo; the index and worktree
+// are never touched. Returns false if nothing changed.
 func (g *gitStore) commit(head plumbing.Hash, paths []string, msg string, allowEmpty bool) (bool, error) {
-	if !head.IsZero() {
-		if err := g.wt.Reset(&git.ResetOptions{Commit: head, Mode: git.MixedReset}); err != nil {
-			return false, fmt.Errorf("reset to remote: %w", err)
-		}
+	base, err := g.rootTree(head)
+	if err != nil {
+		return false, err
 	}
+	edits := make(map[string]plumbing.Hash, len(paths))
 	for _, p := range paths {
-		if _, err := os.Stat(filepath.Join(g.dir, p)); err == nil {
-			if err := g.wt.AddWithOptions(&git.AddOptions{Path: p, SkipStatus: true}); err != nil {
-				return false, fmt.Errorf("add %s: %w", p, err)
+		b, err := os.ReadFile(filepath.Join(g.dir, filepath.FromSlash(p)))
+		switch {
+		case err == nil:
+			if edits[p], err = g.storeObject(plumbing.BlobObject, b); err != nil {
+				return false, err
 			}
-		} else if _, err := g.wt.Remove(p); err != nil && !errors.Is(err, index.ErrEntryNotFound) {
-			return false, fmt.Errorf("remove %s: %w", p, err)
+		case errors.Is(err, os.ErrNotExist):
+			edits[p] = plumbing.ZeroHash
+		default:
+			return false, err
 		}
 	}
-	sig := &object.Signature{Name: g.authorName, Email: g.authorEmail, When: time.Now()}
-	_, err := g.wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig, AllowEmptyCommits: allowEmpty})
-	if errors.Is(err, git.ErrEmptyCommit) {
+	tree, err := g.editTree(base, edits)
+	if err != nil {
+		return false, err
+	}
+	if tree == base && !allowEmpty {
 		return false, nil
 	}
-	return err == nil, err
+	now := time.Now()
+	sig := object.Signature{Name: g.authorName, Email: g.authorEmail, When: now}
+	if err := g.writeCommit(tree, head, msg, sig, sig); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-func (g *gitStore) push(ctx context.Context) error {
+// rootTree returns the tree of commit h, or ZeroHash for ZeroHash.
+func (g *gitStore) rootTree(h plumbing.Hash) (plumbing.Hash, error) {
+	if h.IsZero() {
+		return plumbing.ZeroHash, nil
+	}
+	c, err := object.GetCommit(g.repo.Storer, h)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return c.TreeHash, nil
+}
+
+// storeObject writes an object unless the store already has it.
+func (g *gitStore) storeObject(t plumbing.ObjectType, content []byte) (plumbing.Hash, error) {
+	h := plumbing.ComputeHash(t, content)
+	if g.repo.Storer.HasEncodedObject(h) == nil {
+		return h, nil
+	}
+	obj := g.repo.Storer.NewEncodedObject()
+	obj.SetType(t)
+	obj.SetSize(int64(len(content)))
+	w, err := obj.Writer()
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	if _, err := w.Write(content); err != nil {
+		w.Close()
+		return plumbing.ZeroHash, err
+	}
+	if err := w.Close(); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return g.repo.Storer.SetEncodedObject(obj)
+}
+
+// treeEntries loads the entries of tree h by name (none for ZeroHash).
+func (g *gitStore) treeEntries(h plumbing.Hash) (map[string]object.TreeEntry, error) {
+	entries := map[string]object.TreeEntry{}
+	if h.IsZero() {
+		return entries, nil
+	}
+	t, err := object.GetTree(g.repo.Storer, h)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range t.Entries {
+		entries[e.Name] = e
+	}
+	return entries, nil
+}
+
+// storeTree writes a tree in git's entry order. An empty tree is ZeroHash
+// (git drops empty directories) unless keepEmpty is set.
+func (g *gitStore) storeTree(entries map[string]object.TreeEntry, keepEmpty bool) (plumbing.Hash, error) {
+	if len(entries) == 0 && !keepEmpty {
+		return plumbing.ZeroHash, nil
+	}
+	list := make([]object.TreeEntry, 0, len(entries))
+	for _, e := range entries {
+		list = append(list, e)
+	}
+	key := func(e object.TreeEntry) string {
+		if e.Mode == filemode.Dir {
+			return e.Name + "/"
+		}
+		return e.Name
+	}
+	sort.Slice(list, func(i, j int) bool { return key(list[i]) < key(list[j]) })
+	obj := &plumbing.MemoryObject{}
+	if err := (&object.Tree{Entries: list}).Encode(obj); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	r, err := obj.Reader()
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return g.storeObject(plumbing.TreeObject, content)
+}
+
+// editTree returns tree base (ZeroHash: empty) with edits applied: each path,
+// relative to base, set to a blob, or removed for ZeroHash. Directories left
+// empty are dropped; an empty result is ZeroHash.
+func (g *gitStore) editTree(base plumbing.Hash, edits map[string]plumbing.Hash) (plumbing.Hash, error) {
+	entries, err := g.treeEntries(base)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	nested := map[string]map[string]plumbing.Hash{}
+	for p, blob := range edits {
+		name, rest, deeper := strings.Cut(p, "/")
+		if deeper {
+			if nested[name] == nil {
+				nested[name] = map[string]plumbing.Hash{}
+			}
+			nested[name][rest] = blob
+			continue
+		}
+		if blob.IsZero() {
+			if e, ok := entries[name]; ok && e.Mode != filemode.Dir {
+				delete(entries, name)
+			}
+			continue
+		}
+		entries[name] = object.TreeEntry{Name: name, Mode: filemode.Regular, Hash: blob}
+	}
+	for name, sub := range nested {
+		var subBase plumbing.Hash
+		if e, ok := entries[name]; ok && e.Mode == filemode.Dir {
+			subBase = e.Hash
+		}
+		h, err := g.editTree(subBase, sub)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		switch {
+		case !h.IsZero():
+			entries[name] = object.TreeEntry{Name: name, Mode: filemode.Dir, Hash: h}
+		case !subBase.IsZero():
+			delete(entries, name)
+		}
+	}
+	return g.storeTree(entries, false)
+}
+
+// writeCommit stores a commit (an empty tree for ZeroHash) and points the branch at it.
+func (g *gitStore) writeCommit(tree, parent plumbing.Hash, msg string, author, committer object.Signature) error {
+	if tree.IsZero() {
+		var err error
+		if tree, err = g.storeTree(nil, true); err != nil {
+			return err
+		}
+	}
+	c := &object.Commit{Author: author, Committer: committer, Message: msg, TreeHash: tree}
+	if !parent.IsZero() {
+		c.ParentHashes = []plumbing.Hash{parent}
+	}
+	obj := g.repo.Storer.NewEncodedObject()
+	if err := c.Encode(obj); err != nil {
+		return err
+	}
+	h, err := g.repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		return err
+	}
+	return g.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(g.branch), h))
+}
+
+const maxPushAttempts = 8
+
+// push sends the branch head. When another cluster pushed first, the commit is
+// rebuilt on the new remote head by rebase and sent again after a short random
+// pause, so clusters that collide don't collide again in lockstep. Returns how
+// many times the remote had moved.
+func (g *gitStore) push(ctx context.Context) (conflicts int, err error) {
+	for attempt := 1; ; attempt++ {
+		err := g.pushOnce(ctx)
+		if err == nil || attempt == maxPushAttempts || ctx.Err() != nil {
+			return conflicts, err
+		}
+		sleepCtx(ctx, pushPause(attempt))
+		moved, rerr := g.rebase(ctx)
+		if rerr != nil {
+			return conflicts, fmt.Errorf("%w (rebase: %v)", err, rerr)
+		}
+		if !moved {
+			return conflicts, err
+		}
+		conflicts++
+		slog.Debug("remote branch moved; pushing again on top of it", "attempt", attempt)
+	}
+}
+
+// pushPause is a random pause, growing with the attempt, capped at 5s.
+func pushPause(attempt int) time.Duration {
+	d := min(250*time.Millisecond<<attempt, 5*time.Second)
+	return d/2 + rand.N(d/2)
+}
+
+func (g *gitStore) pushOnce(ctx context.Context) error {
 	spec := gitconfig.RefSpec("refs/heads/" + g.branch + ":refs/heads/" + g.branch)
 	err := g.repo.PushContext(ctx, &git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{spec}, Auth: g.auth})
 	if errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return nil
 	}
 	return err
+}
+
+// rebase fetches the remote head and, if it is no longer the parent of the local
+// head, rebuilds the local head on top of it: the remote tree with this cluster's
+// directory replaced by the local one. Only this instance writes that directory,
+// so nothing of another cluster's is ever lost. Returns false if the remote has
+// not moved (the push failed for another reason).
+func (g *gitStore) rebase(ctx context.Context) (bool, error) {
+	remote, err := g.fetch(ctx)
+	if err != nil {
+		return false, err
+	}
+	ref, err := g.repo.Reference(plumbing.NewBranchReferenceName(g.branch), true)
+	if err != nil {
+		return false, err
+	}
+	local, err := object.GetCommit(g.repo.Storer, ref.Hash())
+	if err != nil {
+		return false, err
+	}
+	var parent plumbing.Hash
+	if len(local.ParentHashes) > 0 {
+		parent = local.ParentHashes[0]
+	}
+	if parent == remote || local.Hash == remote {
+		return false, nil
+	}
+	own, err := g.treeEntries(local.TreeHash)
+	if err != nil {
+		return false, err
+	}
+	remoteTree, err := g.rootTree(remote)
+	if err != nil {
+		return false, err
+	}
+	entries, err := g.treeEntries(remoteTree)
+	if err != nil {
+		return false, err
+	}
+	if e, ok := own[g.cluster]; ok {
+		entries[g.cluster] = e
+	} else {
+		delete(entries, g.cluster)
+	}
+	tree, err := g.storeTree(entries, false)
+	if err != nil {
+		return false, err
+	}
+	if tree == remoteTree {
+		return true, g.repo.Storer.SetReference(plumbing.NewHashReference(ref.Name(), remote))
+	}
+	committer := local.Committer
+	committer.When = time.Now()
+	return true, g.writeCommit(tree, remote, local.Message, local.Author, committer)
 }
