@@ -28,7 +28,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
       - name: pickle
-        image: ghcr.io/hatam-abolghasemi/pickle:1.0.1
+        image: ghcr.io/hatam-abolghasemi/pickle:latest
         envFrom:
         - configMapRef: {name: pickle}
         env:
