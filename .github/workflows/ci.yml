@@ -50,9 +50,9 @@ jobs:
         with:
           persist-credentials: false
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-      - run: helm lint helm/pickle -f helm/values-stg.yaml
-      - run: helm template pickle helm/pickle -f helm/values-stg.yaml > /dev/null
-      - run: helm template pickle helm/pickle -f helm/values-stg.yaml --set networkPolicy.enabled=true --set networkPolicy.apiServer.cidrs={10.0.0.10/32} --set networkPolicy.git.cidrs={10.0.0.20/32} > /dev/null
+      - run: helm lint helm/pickle -f helm/values-sample.yaml
+      - run: helm template pickle helm/pickle -f helm/values-sample.yaml > /dev/null
+      - run: helm template pickle helm/pickle -f helm/values-sample.yaml --set networkPolicy.enabled=true --set networkPolicy.apiServer.cidrs={10.0.0.10/32} --set networkPolicy.git.cidrs={10.0.0.20/32} > /dev/null
 
   docker:
     runs-on: ubuntu-latest

@@ -13,6 +13,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_GIT_BRANCH` | `main` | Created on first push |
 | `PICKLE_COMMIT_DELAY` | `10s` | Commit once changes have been quiet this long |
 | `PICKLE_COMMIT_MAX_DELAY` | `1m` | Commit at the latest this long after the first pending change |
+| `PICKLE_COLOR` | empty | Marker before every commit subject: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`, `black` or `white` (🔴🟠🟡🟢🔵🟣🟤⚫⚪) |
 | `PICKLE_EXCLUDE` | empty | Types never mirrored; see [Excluding](#excluding) |
 | `PICKLE_EXCLUDE_NAMESPACES` | empty | Namespaces never mirrored; shell patterns like `tmp-*` |
 | `PICKLE_REDISCOVERY_INTERVAL` | `off` | Optional timer for picking up new types; at least `1m` |
@@ -31,7 +32,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 
 `PICKLE_COMMIT_INTERVAL` from 1.0.0 still works as `PICKLE_COMMIT_DELAY`, with a warning in the log.
 
-In Helm, these map to `config.*` and `git.*` in [`values.yaml`](../helm/pickle/values.yaml); anything else can go in `extraEnv`.
+In Helm, these map to `cluster`, `color`, `config.*` and `git.*` in [`values.yaml`](../helm/pickle/values.yaml); anything else can go in `extraEnv`.
 
 ## Excluding
 

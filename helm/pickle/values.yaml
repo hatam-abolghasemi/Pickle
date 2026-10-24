@@ -1,5 +1,8 @@
 # Required: root directory in the repo, e.g. stg.
 cluster: ""
+# Marker in front of every commit subject, to tell clusters apart at a glance:
+# red, orange, yellow, green, blue, purple, brown, black or white. Empty for none.
+color: ""
 
 git:
   # Required: git@host:path.git, ssh://... or https://... (never with credentials in it).

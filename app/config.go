@@ -14,6 +14,7 @@ import (
 
 type config struct {
 	Cluster string
+	Color   string
 	RepoDir string
 
 	GitURL            string
@@ -104,6 +105,31 @@ func splitList(v string) []string {
 	return strings.FieldsFunc(v, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' })
 }
 
+// clusterColors maps PICKLE_COLOR names to the marker put in front of every
+// commit subject, so commits from different clusters stand apart at a glance.
+var clusterColors = map[string]string{
+	"red":    "🔴",
+	"orange": "🟠",
+	"yellow": "🟡",
+	"green":  "🟢",
+	"blue":   "🔵",
+	"purple": "🟣",
+	"brown":  "🟤",
+	"black":  "⚫",
+	"white":  "⚪",
+}
+
+func parseColor(v string) (string, error) {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "", nil
+	}
+	if m, ok := clusterColors[v]; ok {
+		return m, nil
+	}
+	return "", fmt.Errorf("PICKLE_COLOR: unknown color %q (use red, orange, yellow, green, blue, purple, brown, black or white)", v)
+}
+
 var clusterNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 func loadConfig() (*config, error) {
@@ -129,6 +155,9 @@ func loadConfig() (*config, error) {
 	c.AuthorEmail = env("PICKLE_GIT_AUTHOR_EMAIL", "pickle@"+c.Cluster+".local")
 
 	var err error
+	if c.Color, err = parseColor(os.Getenv("PICKLE_COLOR")); err != nil {
+		return nil, err
+	}
 	delayDefault := 10 * time.Second
 	if os.Getenv("PICKLE_COMMIT_DELAY") == "" && os.Getenv("PICKLE_COMMIT_INTERVAL") != "" {
 		c.Deprecated = append(c.Deprecated, "PICKLE_COMMIT_INTERVAL is deprecated; it is used as PICKLE_COMMIT_DELAY")

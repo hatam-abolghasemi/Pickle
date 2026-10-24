@@ -992,6 +992,9 @@ func (e *engine) message(paths []string, changes map[string]change, note string)
 		count[c.op]++
 	}
 	var b strings.Builder
+	if e.cfg.Color != "" {
+		b.WriteString(e.cfg.Color + " ")
+	}
 	b.WriteString("[" + e.cfg.Cluster + "] ")
 	if note != "" && len(changes) == 0 {
 		b.WriteString(note)

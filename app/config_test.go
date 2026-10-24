@@ -52,6 +52,7 @@ func TestConfigRejects(t *testing.T) {
 		"user in https url":   {"PICKLE_GIT_URL": "https://pickle@gitlab.example.com/a/b.git"},
 		"password in ssh url": {"PICKLE_GIT_URL": "ssh://git:pw@gitlab.example.com/a/b.git"},
 		"tiny rediscovery":    {"PICKLE_REDISCOVERY_INTERVAL": "5s"},
+		"unknown color":       {"PICKLE_COLOR": "#00ff00"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setEnv(t, kv)
@@ -115,5 +116,17 @@ func TestExcludeRules(t *testing.T) {
 	setEnv(t, map[string]string{"PICKLE_EXCLUDE": "*"})
 	if _, err := loadConfig(); err == nil {
 		t.Error("a bare * must be rejected")
+	}
+}
+
+func TestConfigColor(t *testing.T) {
+	setEnv(t, nil)
+	c, err := loadConfig()
+	if err != nil || c.Color != "" {
+		t.Fatalf("no color by default: %q %v", c.Color, err)
+	}
+	setEnv(t, map[string]string{"PICKLE_COLOR": " Green "})
+	if c, err = loadConfig(); err != nil || c.Color != "🟢" {
+		t.Fatalf("green must map to its marker: %q %v", c.Color, err)
 	}
 }

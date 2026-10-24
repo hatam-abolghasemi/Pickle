@@ -7,6 +7,9 @@ metadata:
     {{- include "pickle.labels" . | nindent 4 }}
 data:
   PICKLE_CLUSTER: {{ required "cluster is required (root directory in the repo, e.g. stg)" .Values.cluster | quote }}
+  {{- with .Values.color }}
+  PICKLE_COLOR: {{ . | quote }}
+  {{- end }}
   PICKLE_GIT_URL: {{ required "git.url is required" .Values.git.url | quote }}
   PICKLE_GIT_BRANCH: {{ .Values.git.branch | quote }}
   PICKLE_GIT_SSH_USER: {{ .Values.git.sshUser | quote }}
