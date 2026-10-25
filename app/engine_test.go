@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
@@ -314,5 +315,52 @@ func TestMessageColor(t *testing.T) {
 	e.cfg.Color = "🟢"
 	if got := e.message(paths, changes, ""); !strings.HasPrefix(got, "🟢 [stg] 1 added\n") {
 		t.Fatalf("with color: %q", got)
+	}
+}
+
+func TestHeaderOnlyChangeIsNotWritten(t *testing.T) {
+	cfg := &config{Cluster: "stg", RepoDir: t.TempDir()}
+	m := newMetrics("stg")
+	e, err := newEngine(cfg, nil, testDisco, nil, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backfill = false
+	app := &resource{gvr: schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}, kind: "Application", namespaced: true, token: "application"}
+	sec := &resource{gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, kind: "Secret", namespaced: true, token: "secret"}
+
+	at := func(ts, body string) *unstructured.Unstructured {
+		return obj(t, `{apiVersion: argoproj.io/v1alpha1, kind: Application, metadata: {name: karma, namespace: argocd,
+		  managedFields: [{manager: argocd-application-controller, operation: Update, time: "`+ts+`"}]},
+		  spec: {project: `+body+`}, status: {reconciledAt: "`+ts+`"}}`)
+	}
+	p := e.handle(app, at("2026-10-25T03:13:57Z", "default"), false, true)
+	delete(e.dirty, p)
+	e.handle(app, at("2026-10-25T03:20:20Z", "default"), false, true)
+	if _, ok := e.dirty[p]; ok {
+		t.Error("a status-only reconcile rewrote the file")
+	}
+	b, _ := os.ReadFile(e.abs(p))
+	if !strings.Contains(string(b), "03:13:57Z") {
+		t.Errorf("header should keep the last real change:\n%s", b)
+	}
+	e.handle(app, at("2026-10-25T03:25:00Z", "platform"), false, true)
+	if _, ok := e.dirty[p]; !ok {
+		t.Error("a spec change was not written")
+	}
+	b, _ = os.ReadFile(e.abs(p))
+	if !strings.Contains(string(b), "03:25:00Z") {
+		t.Errorf("header not refreshed with the body:\n%s", b)
+	}
+
+	st := func(ts string) *unstructured.Unstructured {
+		return obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments,
+		  managedFields: [{manager: kubectl, operation: Update, time: "`+ts+`"}]}, data: {PASSWORD: eHh4}}`)
+	}
+	p = e.handle(sec, st("2026-10-25T03:00:00Z"), false, true)
+	delete(e.dirty, p)
+	e.handle(sec, st("2026-10-25T04:00:00Z"), false, true)
+	if _, ok := e.dirty[p]; !ok {
+		t.Error("a Secret value change, visible only in the header, was not written")
 	}
 }

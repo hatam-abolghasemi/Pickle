@@ -21,13 +21,13 @@ helm lint helm/pickle -f helm/values-sample.yaml
 
 ## Releases
 
-`CHANGELOG.md` is the only place a version is written. To release:
+`CHANGELOG.md` is the only place a version is written. Changes collect under `## [Unreleased]` across as many pushes as you like; nothing is released until you cut a version. To release:
 
 1. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add a new empty `## [Unreleased]` above it.
 2. Update the compare links at the bottom of the changelog.
 3. Merge to `main`.
 
-When CI passes on `main`, the release workflow takes the newest `## [X.Y.Z] - YYYY-MM-DD` heading. If `vX.Y.Z` is not tagged yet, it publishes:
+The release workflow only starts on pushes to `main` that touch `CHANGELOG.md`. It takes the newest `## [X.Y.Z] - YYYY-MM-DD` heading; if `vX.Y.Z` is already tagged it stops there. Otherwise it runs CI and, if that passes, publishes:
 
 - the image `ghcr.io/hatam-abolghasemi/pickle` as `X.Y.Z`, `X.Y` and `latest`
 - the chart `oci://ghcr.io/hatam-abolghasemi/charts/pickle` with version and appVersion `X.Y.Z`

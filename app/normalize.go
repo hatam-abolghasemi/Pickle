@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"strings"
 	"time"
 
@@ -168,6 +170,31 @@ func maskSecret(n *unstructured.Unstructured) {
 		masked[k] = secretMask
 	}
 	n.Object["data"] = masked
+}
+
+const secretsID = "core/secrets"
+
+// contentHash decides whether a file needs rewriting. The header alone is not
+// a change: controllers such as the Argo CD application controller write
+// status through the main resource, which bumps managedFields time on every
+// reconcile while the mirrored body stays the same. Secrets are the exception:
+// their values are masked, so the header is the only sign a value changed.
+func contentHash(content []byte, secret bool) [32]byte {
+	if secret {
+		return sha256.Sum256(content)
+	}
+	return sha256.Sum256(stripHeader(content))
+}
+
+func stripHeader(content []byte) []byte {
+	for len(content) > 0 && content[0] == '#' {
+		i := bytes.IndexByte(content, '\n')
+		if i < 0 {
+			return nil
+		}
+		content = content[i+1:]
+	}
+	return content
 }
 
 // render produces the exact bytes written to the repo.
