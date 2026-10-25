@@ -598,7 +598,7 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 		e.removeLocked(p, readHeader(u).manager)
 		return p
 	}
-	sum := sha256.Sum256(content)
+	sum := contentHash(content, r.isSecret())
 	old, existed := e.entries[p]
 	if existed && old.hash == sum {
 		return p
@@ -738,7 +738,7 @@ func (e *engine) loadExisting() error {
 		if t := tokenOf(base, e.tokens); t != "" {
 			res = e.tokens[t]
 		}
-		e.entries[rel] = entry{hash: sha256.Sum256(data), res: res}
+		e.entries[rel] = entry{hash: contentHash(data, res == secretsID), res: res}
 		return nil
 	})
 	e.m.objectsTracked.Store(int64(len(e.entries)))

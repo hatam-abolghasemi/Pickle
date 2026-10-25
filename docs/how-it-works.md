@@ -50,6 +50,8 @@ From `managedFields`, ignoring the `status` subresource:
 - `last-changed`: when that happened on the cluster.
 - `argocd-app`: from Argo's tracking annotation or instance label.
 
+The header is only refreshed when the rest of the file changes. Some controllers, such as the Argo CD application controller, write status through the object itself, which moves its `managedFields` time on every reconcile even though nothing pickle writes has changed. Secrets are the exception: their values are masked, so a header change is the only sign a value changed, and it is always written.
+
 The user and source IP aren't stored on objects; only API server audit logs have them.
 
 ## Skipped

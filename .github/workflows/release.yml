@@ -1,10 +1,9 @@
 name: release
 
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
+  push:
     branches: [main]
+    paths: [CHANGELOG.md]
 
 permissions: {}
 
@@ -14,7 +13,6 @@ concurrency:
 
 jobs:
   version:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - id: v
         env:
@@ -40,16 +38,22 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "minor=${VERSION%.*}" >> "$GITHUB_OUTPUT"
           if gh api "repos/$REPO/git/ref/tags/v$VERSION" > /dev/null 2>&1; then
-            echo "v$VERSION is already released; nothing to do"
+            echo "v$VERSION is already released and [Unreleased] has not been cut into a new version; nothing to do"
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
             echo "releasing $VERSION"
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  image:
+  ci:
     needs: version
     if: needs.version.outputs.release == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  image:
+    needs: [version, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -79,13 +83,12 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/pickle:latest
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.version.outputs.version }}
             org.opencontainers.image.licenses=Apache-2.0
 
   chart:
-    needs: version
-    if: needs.version.outputs.release == 'true'
+    needs: [version, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,7 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
       - env:
@@ -116,12 +119,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
+          SHA: ${{ github.sha }}
         run: |
           awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} /^\[[^]]+\]: / {f=0} f' CHANGELOG.md > notes.md
           gh release create "v$VERSION" --target "$SHA" --title "$VERSION" --notes-file notes.md
