@@ -4,6 +4,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-10-28
+
 ### Added
 
 - Secret value fingerprints: with a `fingerprint-key` in the `pickle-git` Secret (Helm: `secrets.fingerprintKey`), each value is written as `****:<fingerprint>`, a keyed HMAC-SHA256, so a changed value shows up as a diff line under its own key without revealing it. Secrets are then only rewritten when a value, key or label changes, not on a header-only change. Enabling it, or changing the key, rewrites every Secret file once.
@@ -76,7 +78,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...HEAD
+[1.0.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/hatam-abolghasemi/pickle/releases/tag/v1.0.0
