@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ var droppedAnnotations = map[string]bool{
 	"deployment.kubernetes.io/revision":                true,
 	"control-plane.alpha.kubernetes.io/leader":         true,
 	"volume.kubernetes.io/selected-node":               true,
+	"argocd.argoproj.io/refresh":                       true, // a one-shot request the Argo CD controller removes within seconds
 }
 
 var droppedAnnotationPrefixes = []string{"pv.kubernetes.io/"}
@@ -120,6 +123,11 @@ func normalize(u *unstructured.Unstructured) *unstructured.Unstructured {
 			unstructured.RemoveNestedField(out, "spec", "claimRef", "resourceVersion")
 		}
 	}
+	if n.GetKind() == "Application" && strings.HasPrefix(n.GetAPIVersion(), "argoproj.io/") {
+		// An in-flight sync request: the controller clears it when the sync ends,
+		// and re-applying it on restore would start a sync nobody asked for.
+		delete(out, "operation")
+	}
 	return n
 }
 
@@ -144,17 +152,23 @@ func stringMap(m map[string]string) map[string]any {
 }
 
 // secretMask replaces every Secret value. Masking happens in memory before
-// rendering, so real values never touch disk. A value change still shows up in Git through
-// the header (last-manager / last-changed), and added, removed or renamed keys
-// show up as ordinary diff lines.
+// rendering, so real values never touch disk. With a fingerprint key, each
+// value becomes "****:" plus a short keyed hash of it, so a changed value shows
+// up in Git as a changed line under its own key, without revealing the value.
+// Without a key every value is "****" and a value change only shows up through
+// the header (last-manager / last-changed).
 const secretMask = "****"
+
+// fingerprintLen is the number of hex digits kept from the HMAC: enough that
+// two different values of one key never look the same in practice.
+const fingerprintLen = 12
 
 // secretFields are the only top-level Secret fields that are ever written.
 // Anything else, including fields a future API version might add, is dropped:
 // masking fails closed rather than trusting a field to be harmless.
 var secretFields = map[string]bool{"apiVersion": true, "kind": true, "metadata": true, "type": true, "immutable": true, "data": true}
 
-func maskSecret(n *unstructured.Unstructured) {
+func maskSecret(n *unstructured.Unstructured, key []byte) {
 	for k := range n.Object {
 		if !secretFields[k] {
 			delete(n.Object, k)
@@ -166,10 +180,20 @@ func maskSecret(n *unstructured.Unstructured) {
 		return
 	}
 	masked := make(map[string]any, len(data))
-	for k := range data {
-		masked[k] = secretMask
+	for k, v := range data {
+		masked[k] = maskValue(v, key)
 	}
 	n.Object["data"] = masked
+}
+
+func maskValue(v any, key []byte) string {
+	s, ok := v.(string)
+	if len(key) == 0 || !ok {
+		return secretMask
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(s))
+	return secretMask + ":" + hex.EncodeToString(mac.Sum(nil))[:fingerprintLen]
 }
 
 const secretsID = "core/secrets"
@@ -177,10 +201,11 @@ const secretsID = "core/secrets"
 // contentHash decides whether a file needs rewriting. The header alone is not
 // a change: controllers such as the Argo CD application controller write
 // status through the main resource, which bumps managedFields time on every
-// reconcile while the mirrored body stays the same. Secrets are the exception:
-// their values are masked, so the header is the only sign a value changed.
-func contentHash(content []byte, secret bool) [32]byte {
-	if secret {
+// reconcile while the mirrored body stays the same. headerCounts is only set
+// for Secrets masked without a fingerprint key, where the header is the only
+// sign a value changed.
+func contentHash(content []byte, headerCounts bool) [32]byte {
+	if headerCounts {
 		return sha256.Sum256(content)
 	}
 	return sha256.Sum256(stripHeader(content))

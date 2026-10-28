@@ -24,7 +24,7 @@ for f in stg/_cluster/namespace-*.yaml; do sudo kubectl apply -f "$f"; done
 cat stg/*/_secrets-referenced.txt
 ```
 
-The `secret-*.yaml` files keep each Secret's type, labels and keys, with every value as `****`. Fill in real values from your vault before applying them.
+The `secret-*.yaml` files keep each Secret's type, labels and keys, with every value as `****` (or `****:<fingerprint>`). Fill in real values from your vault before applying them.
 
 **4. Everything else**, dry run first:
 

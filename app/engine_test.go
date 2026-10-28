@@ -364,3 +364,96 @@ func TestHeaderOnlyChangeIsNotWritten(t *testing.T) {
 		t.Error("a Secret value change, visible only in the header, was not written")
 	}
 }
+
+func TestSecretFingerprintChanges(t *testing.T) {
+	cfg := &config{Cluster: "stg", RepoDir: t.TempDir(), FingerprintKey: []byte("0123456789abcdef0123456789abcdef")}
+	e, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backfill = false
+	sec := &resource{gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, kind: "Secret", namespaced: true, token: "secret"}
+	st := func(ts, pw string) *unstructured.Unstructured {
+		return obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments,
+		  managedFields: [{manager: kubectl, operation: Update, time: "`+ts+`"}]}, data: {PASSWORD: `+pw+`, USER: YWRtaW4=}}`)
+	}
+	p := e.handle(sec, st("2026-10-25T03:00:00Z", "eHh4"), false, true)
+	delete(e.dirty, p)
+	before, _ := os.ReadFile(e.abs(p))
+	e.handle(sec, st("2026-10-25T04:00:00Z", "eHh4"), false, true)
+	if _, ok := e.dirty[p]; ok {
+		t.Error("a Secret whose values did not change was rewritten")
+	}
+	e.handle(sec, st("2026-10-25T05:00:00Z", "eXl5"), false, true)
+	if _, ok := e.dirty[p]; !ok {
+		t.Fatal("a Secret value change was not written")
+	}
+	after, _ := os.ReadFile(e.abs(p))
+	var changed []string
+	bl, al := strings.Split(string(before), "\n"), strings.Split(string(after), "\n")
+	for i := range bl {
+		if i < len(al) && bl[i] != al[i] && !strings.HasPrefix(bl[i], "#") {
+			changed = append(changed, strings.TrimSpace(al[i]))
+		}
+	}
+	if len(changed) != 1 || !strings.HasPrefix(changed[0], "PASSWORD: ") {
+		t.Errorf("only the PASSWORD line should change, got %q", changed)
+	}
+}
+
+func TestChangedAndBackIsNotCommitted(t *testing.T) {
+	remote := newRemote(t)
+	dir := t.TempDir()
+	g, err := openGitStore(&config{Cluster: "stg", RepoDir: dir, GitURL: remote, GitBranch: "master", AuthorName: "p", AuthorEmail: "p@p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config{Cluster: "stg", RepoDir: dir}
+	m := newMetrics("stg")
+	e, err := newEngine(cfg, nil, testDisco, g, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backfill = false
+	app := &resource{gvr: schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}, kind: "Application", namespaced: true, token: "application"}
+	at := func(ts, project string) *unstructured.Unstructured {
+		return obj(t, `{apiVersion: argoproj.io/v1alpha1, kind: Application, metadata: {name: crm, namespace: argocd,
+		  managedFields: [{manager: argocd-application-controller, operation: Update, time: "`+ts+`"}]},
+		  spec: {project: `+project+`}}`)
+	}
+	ctx := context.Background()
+	p := e.handle(app, at("2026-10-28T05:15:58Z", "default"), false, true)
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m.commits.Load() != 1 {
+		t.Fatalf("commits = %d, want 1", m.commits.Load())
+	}
+	committed, _ := os.ReadFile(e.abs(p))
+
+	e.handle(app, at("2026-10-28T05:20:58Z", "busy"), false, true)
+	e.handle(app, at("2026-10-28T05:20:59Z", "default"), false, true)
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m.commits.Load() != 1 {
+		t.Error("a change that was undone before the commit produced a header-only commit")
+	}
+	if b, _ := os.ReadFile(e.abs(p)); string(b) != string(committed) {
+		t.Errorf("file must be back to the committed bytes:\n%s", b)
+	}
+	if len(e.dirty)+len(e.unpushed) != 0 {
+		t.Error("nothing should be left pending")
+	}
+
+	e.handle(app, at("2026-10-28T05:30:00Z", "platform"), false, true)
+	if err := e.flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if m.commits.Load() != 2 {
+		t.Fatal("a real change was not committed")
+	}
+	if s := remoteFiles(t, remote)[p]; !strings.Contains(s, "05:30:00Z") || !strings.Contains(s, "project: platform") {
+		t.Errorf("real change not pushed:\n%s", s)
+	}
+}

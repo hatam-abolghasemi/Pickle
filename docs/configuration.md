@@ -27,12 +27,13 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_GIT_USERNAME` | `pickle` | HTTPS username |
 | `PICKLE_GIT_AUTHOR_NAME` | `pickle` | |
 | `PICKLE_GIT_AUTHOR_EMAIL` | `pickle@<cluster>.local` | |
+| `PICKLE_SECRET_FINGERPRINT_KEY_FILE` | `/etc/pickle/git/fingerprint-key` | Key for Secret value fingerprints; a missing file turns them off |
 | `PICKLE_REPO_DIR` | `/data/repo` | Local clone. Must be empty or a pickle clone; anything else is refused, never deleted |
 | `GOMEMLIMIT` | the memory limit | Set from `limits.memory` by the manifests, so the GC works harder before the container is OOM-killed |
 
 `PICKLE_COMMIT_INTERVAL` from 1.0.0 still works as `PICKLE_COMMIT_DELAY`, with a warning in the log.
 
-In Helm, these map to `cluster`, `color`, `config.*` and `git.*` in [`values.yaml`](../helm/pickle/values.yaml); anything else can go in `extraEnv`.
+In Helm, these map to `cluster`, `color`, `config.*`, `git.*` and `secrets.*` in [`values.yaml`](../helm/pickle/values.yaml); anything else can go in `extraEnv`.
 
 ## Excluding
 
@@ -71,6 +72,7 @@ Credentials never go in the ConfigMap. They're files from the `pickle-git` Secre
 |---|---|
 | `ssh-privatekey` + `known_hosts` | SSH URLs. Host keys are always verified. |
 | `token` | HTTPS URLs. Without it, pickle connects anonymously. |
+| `fingerprint-key` | Optional. Secret values are written as `****:<fingerprint>` so a changed value shows up under its key; see [security](security.md#secrets). At least 32 characters. |
 
 SSH setup is in the [README](../README.md#quick-start). For HTTPS:
 

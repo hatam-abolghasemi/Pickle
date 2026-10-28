@@ -8,7 +8,9 @@
 
 ## Secrets
 
-Values are replaced by `****` in memory, before rendering, so they never touch disk or Git. Masking fails closed: only `apiVersion`, `kind`, `metadata`, `type`, `immutable` and `data` are written, so a field pickle doesn't know about can never carry a value into Git:
+Values are masked in memory, before rendering, so they never touch disk or Git. Masking fails closed: only `apiVersion`, `kind`, `metadata`, `type`, `immutable` and `data` are written, so a field pickle doesn't know about can never carry a value into Git.
+
+With a fingerprint key (`fingerprint-key` in the `pickle-git` Secret), each value becomes `****:` plus the first 12 hex digits of its HMAC-SHA256 under that key:
 
 ```yaml
 # last-manager: kubectl-edit (Update)
@@ -20,11 +22,18 @@ metadata:
   namespace: payments
 type: Opaque
 data:
-  DB_PASSWORD: '****'
-  DB_USER: '****'
+  DB_PASSWORD: '****:3f9a1c7e5b2d'
+  DB_USER: '****:a07c41d9e2f8'
 ```
 
-A changed value shows up as a new header; added, removed or renamed keys show up as diff lines. ServiceAccount token Secrets are skipped.
+A changed value shows up as a diff line under its own key, so you see exactly which key changed, and a Secret whose values didn't change is never rewritten. The fingerprint reveals nothing about a value without the key. With the key, someone holding the repo could test guesses against it, which is why it lives in the cluster next to the Git credentials, never in the repo, and must be at least 32 characters. The same value always gets the same fingerprint, so a value reused across Secrets is visible as such. Keep the key stable: a new key rewrites every Secret file once.
+
+```bash
+sudo kubectl -n pickle patch secret pickle-git --type merge -p "{\"stringData\":{\"fingerprint-key\":\"$(openssl rand -hex 32)\"}}"
+sudo kubectl -n pickle rollout restart deploy/pickle
+```
+
+Without a key, every value is `****`, a changed value only shows up as a new header, and added, removed or renamed keys show up as diff lines. ServiceAccount token Secrets are skipped.
 
 Each namespace also gets `_secrets-referenced.txt`, built from what workloads declare (`secretKeyRef`, `envFrom`, volumes, `imagePullSecrets`, Ingress `tls`, ServiceAccount secrets):
 

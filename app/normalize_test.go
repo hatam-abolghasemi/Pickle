@@ -105,7 +105,7 @@ func TestServiceIPs(t *testing.T) {
 func TestMaskSecret(t *testing.T) {
 	n := normalize(obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: p},
 		data: {PASSWORD: c2VjcmV0, USER: YWRtaW4=}, stringData: {X: plain}}`))
-	maskSecret(n)
+	maskSecret(n, nil)
 	data, _, _ := unstructured.NestedStringMap(n.Object, "data")
 	if len(data) != 2 || data["PASSWORD"] != "****" || data["USER"] != "****" {
 		t.Fatalf("keys must stay, values must be ****: %v", data)
@@ -118,7 +118,7 @@ func TestMaskSecret(t *testing.T) {
 func TestMaskSecretFailsClosed(t *testing.T) {
 	n := normalize(obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, immutable: true, metadata: {name: db, namespace: p},
 		data: {A: c2VjcmV0}, futureField: {token: plain}}`))
-	maskSecret(n)
+	maskSecret(n, nil)
 	if _, ok := n.Object["futureField"]; ok {
 		t.Fatal("unknown Secret fields must be dropped")
 	}
@@ -127,8 +127,54 @@ func TestMaskSecretFailsClosed(t *testing.T) {
 	}
 
 	odd := normalize(obj(t, `{apiVersion: v1, kind: Secret, metadata: {name: db, namespace: p}, data: plainstring}`))
-	maskSecret(odd)
+	maskSecret(odd, nil)
 	if _, ok := odd.Object["data"]; ok {
 		t.Fatal("data that is not a map must be dropped, not written")
+	}
+}
+
+func TestMaskSecretFingerprint(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	mask := func(y string) map[string]string {
+		n := normalize(obj(t, y))
+		maskSecret(n, key)
+		data, _, _ := unstructured.NestedStringMap(n.Object, "data")
+		return data
+	}
+	a := mask(`{apiVersion: v1, kind: Secret, metadata: {name: db, namespace: p}, data: {PASSWORD: c2VjcmV0, USER: YWRtaW4=}}`)
+	b := mask(`{apiVersion: v1, kind: Secret, metadata: {name: db, namespace: p}, data: {PASSWORD: bmV3c2VjcmV0, USER: YWRtaW4=}}`)
+	if !strings.HasPrefix(a["PASSWORD"], "****:") || len(a["PASSWORD"]) != len("****:")+fingerprintLen {
+		t.Fatalf("value must be **** plus a fingerprint: %q", a["PASSWORD"])
+	}
+	if strings.Contains(a["PASSWORD"], "c2VjcmV0") {
+		t.Fatal("the value itself must never be written")
+	}
+	if a["PASSWORD"] == b["PASSWORD"] {
+		t.Error("a changed value must change its fingerprint")
+	}
+	if a["USER"] != b["USER"] {
+		t.Error("an unchanged value must keep its fingerprint")
+	}
+	n := normalize(obj(t, `{apiVersion: v1, kind: Secret, metadata: {name: db, namespace: p}, data: {PASSWORD: c2VjcmV0}}`))
+	maskSecret(n, []byte("ffffffffffffffffffffffffffffffff"))
+	if other, _, _ := unstructured.NestedString(n.Object, "data", "PASSWORD"); other == a["PASSWORD"] {
+		t.Error("the fingerprint must depend on the key")
+	}
+}
+
+func TestTransientArgoFieldsDropped(t *testing.T) {
+	n := normalize(obj(t, `{apiVersion: argoproj.io/v1alpha1, kind: Application, metadata: {name: a, namespace: argocd,
+		annotations: {argocd.argoproj.io/refresh: normal, keep: me}}, spec: {project: default},
+		operation: {sync: {revision: abc}, initiatedBy: {automated: true}}}`))
+	if _, ok := n.Object["operation"]; ok {
+		t.Error("an in-flight Application operation must be dropped")
+	}
+	ann := n.GetAnnotations()
+	if _, ok := ann["argocd.argoproj.io/refresh"]; ok || ann["keep"] != "me" {
+		t.Errorf("only the refresh request must be dropped: %v", ann)
+	}
+	other := normalize(obj(t, `{apiVersion: example.com/v1, kind: Application, metadata: {name: a}, operation: keep}`))
+	if other.Object["operation"] != "keep" {
+		t.Error("operation of a non-Argo Application must stay")
 	}
 }

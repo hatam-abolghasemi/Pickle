@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -26,6 +28,8 @@ type config struct {
 	GitUsername       string
 	AuthorName        string
 	AuthorEmail       string
+
+	FingerprintKey []byte
 
 	CommitDelay         time.Duration
 	CommitMaxDelay      time.Duration
@@ -174,6 +178,9 @@ func loadConfig() (*config, error) {
 	if c.CommitMaxDelay < c.CommitDelay {
 		return nil, fmt.Errorf("PICKLE_COMMIT_MAX_DELAY (%s) must not be shorter than PICKLE_COMMIT_DELAY (%s)", c.CommitMaxDelay, c.CommitDelay)
 	}
+	if c.FingerprintKey, err = readFingerprintKey(env("PICKLE_SECRET_FINGERPRINT_KEY_FILE", "/etc/pickle/git/fingerprint-key")); err != nil {
+		return nil, err
+	}
 	if c.RediscoveryInterval, err = optDurEnv("PICKLE_REDISCOVERY_INTERVAL"); err != nil {
 		return nil, err
 	}
@@ -209,6 +216,27 @@ func loadConfig() (*config, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// minFingerprintKey keeps the key out of reach of guessing: whoever has the
+// key and the repo can test candidate values against a fingerprint.
+const minFingerprintKey = 32
+
+// readFingerprintKey reads the optional key for Secret value fingerprints.
+// A missing file turns fingerprints off.
+func readFingerprintKey(p string) ([]byte, error) {
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("secret fingerprint key: %w", err)
+	}
+	b = bytes.TrimSpace(b)
+	if len(b) < minFingerprintKey {
+		return nil, fmt.Errorf("secret fingerprint key %s must be at least %d characters (e.g. openssl rand -hex 32)", p, minFingerprintKey)
+	}
+	return b, nil
 }
 
 func env(k, def string) string {
