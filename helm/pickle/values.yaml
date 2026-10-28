@@ -24,6 +24,14 @@ git:
   # Replace the local clone with a fresh shallow one after this many commits.
   compactEvery: 256
 
+secrets:
+  # Key for Secret value fingerprints, at least 32 characters (openssl rand -hex 32).
+  # When set, each value is written as ****:<fingerprint>, so a changed value
+  # shows up as a diff line under its key. Empty writes plain ****.
+  # With git.existingSecret, put it in that Secret as fingerprint-key instead.
+  # Keep it stable: a new key changes every fingerprint once.
+  fingerprintKey: ""
+
 config:
   # Commit once changes have been quiet this long...
   commitDelay: 10s

@@ -355,6 +355,37 @@ func (g *gitStore) rootTree(h plumbing.Hash) (plumbing.Hash, error) {
 	return c.TreeHash, nil
 }
 
+// treeOf returns the root tree of commit h, or nil for ZeroHash.
+func (g *gitStore) treeOf(h plumbing.Hash) (*object.Tree, error) {
+	if h.IsZero() {
+		return nil, nil
+	}
+	c, err := object.GetCommit(g.repo.Storer, h)
+	if err != nil {
+		return nil, err
+	}
+	return c.Tree()
+}
+
+// readTreeFile returns the file at p in tree t, and whether it exists there.
+func readTreeFile(t *object.Tree, p string) ([]byte, bool, error) {
+	if t == nil {
+		return nil, false, nil
+	}
+	f, err := t.File(p)
+	if errors.Is(err, object.ErrFileNotFound) || errors.Is(err, object.ErrDirectoryNotFound) || errors.Is(err, object.ErrEntryNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	s, err := f.Contents()
+	if err != nil {
+		return nil, false, err
+	}
+	return []byte(s), true, nil
+}
+
 // storeObject writes an object unless the store already has it.
 func (g *gitStore) storeObject(t plumbing.ObjectType, content []byte) (plumbing.Hash, error) {
 	h := plumbing.ComputeHash(t, content)

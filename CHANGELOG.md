@@ -4,6 +4,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- Secret value fingerprints: with a `fingerprint-key` in the `pickle-git` Secret (Helm: `secrets.fingerprintKey`), each value is written as `****:<fingerprint>`, a keyed HMAC-SHA256, so a changed value shows up as a diff line under its own key without revealing it. Secrets are then only rewritten when a value, key or label changes, not on a header-only change. Enabling it, or changing the key, rewrites every Secret file once.
+
+### Fixed
+
+- No more header-only commits. An object that changed and changed back before the next commit, such as an Argo CD Application with a sync or refresh request that the controller clears seconds later, was committed with only `last-changed` moved. Each commit now holds net changes against the commit before it, and such files are put back to their committed bytes. Commit messages also report `added` / `modified` against that commit.
+- The `argocd.argoproj.io/refresh` annotation and the `operation` field of Argo CD Applications are no longer mirrored. Both are one-shot requests the controller clears, and re-applying them on restore would trigger a refresh or a sync.
+
 ## [1.0.2] - 2026-10-25
 
 ### Added

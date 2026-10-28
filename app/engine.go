@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -131,6 +133,12 @@ func newEngine(cfg *config, dyn dynamic.Interface, disco discoverer, g *gitStore
 		e.aux[path.Join(cfg.Cluster, kindsFile)] = sha256.Sum256(data)
 	}
 	return e, nil
+}
+
+// headerCounts reports whether a header-only change is a real change for files
+// of resource res: only for Secrets masked without a fingerprint key.
+func (e *engine) headerCounts(res string) bool {
+	return res == secretsID && len(e.cfg.FingerprintKey) == 0
 }
 
 func (e *engine) abs(p string) string { return filepath.Join(e.cfg.RepoDir, filepath.FromSlash(p)) }
@@ -566,7 +574,7 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 		h = readHeader(u)
 		n := normalize(u)
 		if r.isSecret() {
-			maskSecret(n)
+			maskSecret(n, e.cfg.FingerprintKey)
 		}
 		var err error
 		if content, err = render(h, n); err != nil {
@@ -598,7 +606,7 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 		e.removeLocked(p, readHeader(u).manager)
 		return p
 	}
-	sum := contentHash(content, r.isSecret())
+	sum := contentHash(content, e.headerCounts(r.id()))
 	old, existed := e.entries[p]
 	if existed && old.hash == sum {
 		return p
@@ -738,7 +746,7 @@ func (e *engine) loadExisting() error {
 		if t := tokenOf(base, e.tokens); t != "" {
 			res = e.tokens[t]
 		}
-		e.entries[rel] = entry{hash: contentHash(data, res == secretsID), res: res}
+		e.entries[rel] = entry{hash: contentHash(data, e.headerCounts(res)), res: res}
 		return nil
 	})
 	e.m.objectsTracked.Store(int64(len(e.entries)))
@@ -946,6 +954,7 @@ func (e *engine) flush(ctx context.Context) error {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	paths = e.settleLocked(head, paths, changes)
 	msg := e.message(paths, changes, note)
 	committed, err := e.git.commit(head, paths, msg, note != "")
 	e.mu.Unlock()
@@ -976,6 +985,65 @@ func (e *engine) flush(ctx context.Context) error {
 	}
 	releaseMemory()
 	return nil
+}
+
+// settleLocked compares each changed path with the head it is about to be
+// committed on and drops what has no net change. An object can change and
+// change back between two commits, e.g. an Argo CD sync or refresh request
+// that its controller clears seconds later: the body ends up as it was and
+// only the header has moved. Such a file is put back to the committed bytes,
+// so neither the commit nor the next diff shows it. Add/modify ops are also
+// corrected to what the head holds, e.g. an object deleted and recreated
+// between commits is a modification, not an addition.
+func (e *engine) settleLocked(head plumbing.Hash, paths []string, changes map[string]change) []string {
+	tree, err := e.git.treeOf(head)
+	if err != nil {
+		slog.Warn("cannot read head tree; committing changes as they are", "err", err)
+		return paths
+	}
+	kept := paths[:0]
+	for _, p := range paths {
+		old, inHead, err := readTreeFile(tree, p)
+		if err != nil {
+			slog.Warn("cannot read committed file; committing it as it is", "path", p, "err", err)
+			kept = append(kept, p)
+			continue
+		}
+		cur, err := os.ReadFile(e.abs(p))
+		onDisk := err == nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			kept = append(kept, p)
+			continue
+		}
+		c := changes[p]
+		switch {
+		case !onDisk && !inHead:
+			delete(changes, p)
+			continue
+		case onDisk && inHead:
+			if bytes.Equal(cur, old) {
+				delete(changes, p)
+				continue
+			}
+			if en, ok := e.entries[p]; ok && contentHash(cur, e.headerCounts(en.res)) == contentHash(old, e.headerCounts(en.res)) {
+				if err := e.writeFile(p, old); err != nil {
+					slog.Error("restore failed", "path", p, "err", err)
+					kept = append(kept, p)
+					continue
+				}
+				delete(changes, p)
+				continue
+			}
+			c.op = 'M'
+		case onDisk:
+			c.op = 'A'
+		default:
+			c.op = 'D'
+		}
+		changes[p] = c
+		kept = append(kept, p)
+	}
+	return kept
 }
 
 // pathNamespace returns the namespace directory of a repo path

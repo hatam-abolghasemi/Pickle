@@ -59,7 +59,7 @@ func main() {
 	if err != nil {
 		fatal("engine", err)
 	}
-	slog.Info("pickle starting", "cluster", cfg.Cluster, "branch", cfg.GitBranch)
+	slog.Info("pickle starting", "cluster", cfg.Cluster, "branch", cfg.GitBranch, "secretFingerprints", len(cfg.FingerprintKey) > 0)
 	if err := e.run(ctx); err != nil {
 		fatal("run", err)
 	}
