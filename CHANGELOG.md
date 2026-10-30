@@ -4,6 +4,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-10-30
+
+### Added
+
+- Each cluster's directory is claimed in `<cluster>/_cluster-id.txt`, with the UID of the cluster's `kube-system` namespace. A pickle whose `PICKLE_CLUSTER` names a directory another cluster already claimed refuses to start, and one that sees another cluster claim its directory while running stops without pushing. Before, two clusters given the same name mixed their objects in one directory, and each restart deleted the other cluster's files as stale and re-added its own. On the first start the directory is claimed by whichever cluster pushes first.
+
+### Changed
+
+- The backfill lists each type once across all namespaces, instead of once per namespace: a few requests per type rather than one per type and namespace, most of them empty. A restart's backfill took 45 to 50 minutes on busy clusters, most of it spent on per-namespace lists, with every commit in that time labelled `backfill:`. A type whose list outlives etcd's compaction window is listed namespace by namespace instead.
+- `pickle_backfill_namespaces_total` and `pickle_backfill_namespaces_done` are replaced by `pickle_backfill_types_total` and `pickle_backfill_types_done`. The `backfill progress` log line names a type instead of a namespace.
+
+### Fixed
+
+- `_secrets-referenced.txt` files are no longer committed half-written on every start. The index was rewritten from what the backfill had seen so far, so a namespace that changed before the backfill reached it got an index listing only that change, then the full one again minutes later. Index files are now written once the backfill is complete.
+
 ## [1.0.4] - 2026-10-30
 
 ### Added
@@ -95,7 +110,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...v1.0.2
