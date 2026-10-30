@@ -24,6 +24,7 @@ data:
   PICKLE_REDISCOVERY_INTERVAL: {{ .Values.config.rediscoveryInterval | quote }}
   PICKLE_EXCLUDE: {{ join "," .Values.config.exclude | quote }}
   PICKLE_EXCLUDE_NAMESPACES: {{ join "," .Values.config.excludeNamespaces | quote }}
+  PICKLE_METADATA_WATCH: {{ join "," .Values.config.metadataWatch | quote }}
   PICKLE_PAGE_SIZE: {{ .Values.config.pageSize | quote }}
   PICKLE_PAGE_PAUSE: {{ .Values.config.pagePause | quote }}
   PICKLE_QPS: {{ .Values.config.qps | quote }}

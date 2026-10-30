@@ -4,6 +4,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- `PICKLE_METADATA_WATCH` (Helm: `config.metadataWatch`), default `core/pods,apps/replicasets,batch/jobs`: types watched and listed as metadata only. An object with an owner, nearly every Pod, ReplicaSet and Job, is skipped from its metadata alone; one without is read whole with a `GET` and mirrored as before. Empty: every type is read whole, as in 1.0.3.
+- Profiling builds: built with `-tags pprof`, pickle serves `/debug/pprof/` on `DEBUG_PPROF_ADDR`. Release images don't have the tag.
+
+### Changed
+
+Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 objects in 64 namespaces, pickle 1.0.3 and this version produced identical repos.
+
+- Watch events cost half the CPU. Pod status changes, 70% of the events in the lab, no longer decode the whole Pod (see `PICKLE_METADATA_WATCH`); an object whose mirrored body didn't change (a status update, a heartbeat) is no longer rendered to YAML to find that out; the last manager is read from `managedFields` directly instead of converting every entry. 30 events per second took 1.55 CPU-seconds a minute with 1.0.3, 0.76 now.
+- Half the binary. Types are discovered with pickle's own client (aggregated discovery: two requests) instead of client-go's, which brought the typed scheme of every built-in API: the image's binary is 14.7 MB instead of 30 MB, and the code mapped in memory about 8 MiB less.
+- Page cache handed back. Every file pickle writes, the YAML and git's objects, was charged to its pod as page cache, and once read back by a commit or push counted in its working set, growing with the cluster. Their pages are now dropped about 40 seconds after a push, once written to disk, and right after the repo is read at startup. In the lab the pod's working set a minute after the initial sync was 49.6 MiB instead of 77.4 MiB.
+- Pushes send objects without searching for deltas (`pack.window = 0`): the search loaded every pushed object and the trees of every directory a commit touched into memory. Peak memory during the initial sync went from 35 MiB to 24 MiB. Packs are slightly larger; the git server repacks them.
+- The git object cache is capped at 2 MiB instead of 8 MiB. Idle heap went from 9.4 MiB to 5.9 MiB.
+
 ## [1.0.3] - 2026-10-28
 
 ### Added

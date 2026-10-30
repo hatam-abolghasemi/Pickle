@@ -4,7 +4,7 @@
 
 1. **Discover** every resource type that supports `list` and `watch`, minus noise, subresources and `PICKLE_EXCLUDE`.
 2. **Probe** each type with a 1-item `LIST`. Failures are skipped and listed in `<cluster>/_unreadable.txt` with the reason.
-3. **Watch** each readable type cluster-wide, from now on.
+3. **Watch** each readable type cluster-wide, from now on. Types in `PICKLE_METADATA_WATCH` (Pods, ReplicaSets and Jobs by default) are watched and listed as metadata only: an object with an owner is skipped from its metadata alone, one without is read whole with a `GET`.
 4. **Backfill** existing objects: cluster-scoped first, then each namespace alphabetically (minus `PICKLE_EXCLUDE_NAMESPACES`), `PICKLE_PAGE_SIZE` per page with `PICKLE_PAGE_PAUSE` between pages, at most `PICKLE_QPS` requests per second.
 5. **Clean up** files of objects deleted while pickle was down (only for fully listed types, so a permission hiccup never wipes files), and files of anything now excluded.
 6. **Push** an `initial sync complete` commit.

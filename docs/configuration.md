@@ -16,6 +16,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_COLOR` | empty | Marker before every commit subject: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`, `black` or `white` (🔴🟠🟡🟢🔵🟣🟤⚫⚪) |
 | `PICKLE_EXCLUDE` | empty | Types never mirrored; see [Excluding](#excluding) |
 | `PICKLE_EXCLUDE_NAMESPACES` | empty | Namespaces never mirrored; shell patterns like `tmp-*` |
+| `PICKLE_METADATA_WATCH` | `core/pods,apps/replicasets,batch/jobs` | Types watched as metadata only: owned objects are skipped without reading their spec and status, objects without an owner are read whole. For types whose objects nearly always have an owner and change all the time. Empty: every type is read whole |
 | `PICKLE_REDISCOVERY_INTERVAL` | `off` | Optional timer for picking up new types; at least `1m` |
 | `PICKLE_PAGE_SIZE` | `50` | Objects per LIST page |
 | `PICKLE_PAGE_PAUSE` | `200ms` | Pause between pages |
