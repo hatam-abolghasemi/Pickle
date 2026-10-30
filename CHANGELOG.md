@@ -4,6 +4,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-10-30
+
 ### Added
 
 - `PICKLE_METADATA_WATCH` (Helm: `config.metadataWatch`), default `core/pods,apps/replicasets,batch/jobs`: types watched and listed as metadata only. An object with an owner, nearly every Pod, ReplicaSet and Job, is skipped from its metadata alone; one without is read whole with a `GET` and mirrored as before. Empty: every type is read whole, as in 1.0.3.
@@ -93,7 +95,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.0...v1.0.1
