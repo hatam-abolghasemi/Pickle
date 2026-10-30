@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
+	golang.org/x/sys v0.48.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 	sigs.k8s.io/yaml v1.6.0
@@ -56,7 +57,6 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
