@@ -2,12 +2,13 @@
 
 ## Startup
 
-1. **Discover** every resource type that supports `list` and `watch`, minus noise, subresources and `PICKLE_EXCLUDE`.
-2. **Probe** each type with a 1-item `LIST`. Failures are skipped and listed in `<cluster>/_unreadable.txt` with the reason.
-3. **Watch** each readable type cluster-wide, from now on. Types in `PICKLE_METADATA_WATCH` (Pods, ReplicaSets and Jobs by default) are watched and listed as metadata only: an object with an owner is skipped from its metadata alone, one without is read whole with a `GET`.
-4. **Backfill** existing objects: cluster-scoped first, then each namespace alphabetically (minus `PICKLE_EXCLUDE_NAMESPACES`), `PICKLE_PAGE_SIZE` per page with `PICKLE_PAGE_PAUSE` between pages, at most `PICKLE_QPS` requests per second.
-5. **Clean up** files of objects deleted while pickle was down (only for fully listed types, so a permission hiccup never wipes files), and files of anything now excluded.
-6. **Push** an `initial sync complete` commit.
+1. **Claim** `<cluster>/` by writing the UID of the cluster's `kube-system` namespace to `<cluster>/_cluster-id.txt`. If the directory already holds another cluster's UID, pickle exits: two clusters with the same `PICKLE_CLUSTER` would delete each other's files. See [Committing](#committing).
+2. **Discover** every resource type that supports `list` and `watch`, minus noise, subresources and `PICKLE_EXCLUDE`.
+3. **Probe** each type with a 1-item `LIST`. Failures are skipped and listed in `<cluster>/_unreadable.txt` with the reason.
+4. **Watch** each readable type cluster-wide, from now on. Types in `PICKLE_METADATA_WATCH` (Pods, ReplicaSets and Jobs by default) are watched and listed as metadata only: an object with an owner is skipped from its metadata alone, one without is read whole with a `GET`.
+5. **Backfill** existing objects: one list per type across all namespaces, cluster-scoped types first, `PICKLE_PAGE_SIZE` per page with `PICKLE_PAGE_PAUSE` between pages, at most `PICKLE_QPS` requests per second. Objects in `PICKLE_EXCLUDE_NAMESPACES` are skipped. A list that outlives etcd's compaction window (its continue token expires) is redone namespace by namespace. `_secrets-referenced.txt` files are written once the backfill is complete, never from a partial view.
+6. **Clean up** files of objects deleted while pickle was down (only for fully listed types, so a permission hiccup never wipes files), and files of anything now excluded.
+7. **Push** an `initial sync complete` commit.
 
 Watches start before the backfill because a long backfill outlives etcd's compaction window (~5 minutes): a watch started afterwards would fail with `410 Gone`. Objects a watch already wrote are skipped by the backfill, since a backfill page is always older.
 
@@ -68,6 +69,7 @@ The user and source IP aren't stored on objects; only API server audit logs have
 
 ```text
 <cluster>/
+  _cluster-id.txt
   _kinds.txt
   _unreadable.txt
   _cluster/<kind>-<name>.yaml
@@ -83,7 +85,7 @@ When two API groups define the same kind, the first keeps the short prefix (`cer
 
 ## Committing
 
-A change wakes the committer, which waits until changes have been quiet for `PICKLE_COMMIT_DELAY`, but never longer than `PICKLE_COMMIT_MAX_DELAY` after the first one. A Helm upgrade touching 30 objects becomes one commit. Then: fetch the remote head and build a commit on top of it that rewrites only the trees along pickle's changed paths, so a commit costs the same in a small repo as in a huge one. If another cluster pushed in between, pickle takes the new remote head, puts its own `<cluster>/` directory on top and pushes again after a short random pause; since each cluster only ever writes its own directory, this never needs a merge and never touches another cluster's files. Other failures (Git host unreachable, auth) are retried with backoff, up to 5 minutes. On `SIGTERM`, pickle pushes once more before exiting.
+A change wakes the committer, which waits until changes have been quiet for `PICKLE_COMMIT_DELAY`, but never longer than `PICKLE_COMMIT_MAX_DELAY` after the first one. A Helm upgrade touching 30 objects becomes one commit. Then: fetch the remote head and build a commit on top of it that rewrites only the trees along pickle's changed paths, so a commit costs the same in a small repo as in a huge one. If another cluster pushed in between, pickle takes the new remote head, puts its own `<cluster>/` directory on top and pushes again after a short random pause; since each cluster only ever writes its own directory, this never needs a merge and never touches another cluster's files. Every cycle checks `<cluster>/_cluster-id.txt` in the remote head first: if another cluster has claimed the directory, pickle stops without pushing rather than replace that cluster's files with its own. Other failures (Git host unreachable, auth) are retried with backoff, up to 5 minutes. On `SIGTERM`, pickle pushes once more before exiting.
 
 ## Local clone
 
