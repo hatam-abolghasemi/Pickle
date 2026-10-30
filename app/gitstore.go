@@ -47,10 +47,16 @@ type gitStore struct {
 
 	compactEvery int
 	sinceCompact int
+
+	// packedPlain is the repo already set to push without delta search.
+	packedPlain *git.Repository
+	// written: objects stored since their page cache was last dropped.
+	written []plumbing.Hash
+	drops   dropper
 }
 
 const (
-	objectCacheSize     = 8 * cache.MiByte
+	objectCacheSize     = 2 * cache.MiByte
 	defaultCompactEvery = 256
 )
 
@@ -134,6 +140,7 @@ func (g *gitStore) initialClone() error {
 			return fmt.Errorf("checkout: %w", err)
 		}
 	}
+	g.drops.later(nil, []string{g.dir}) // the checkout: read back only if an object changes
 	return os.Remove(marker)
 }
 
@@ -233,6 +240,7 @@ func (g *gitStore) compact(ctx context.Context) {
 	}
 	g.repo = repo
 	os.RemoveAll(filepath.Join(g.dir, old))
+	g.drops.later(nil, []string{filepath.Join(g.dir, ".git")})
 	slog.Info("local git store compacted")
 }
 
@@ -406,7 +414,11 @@ func (g *gitStore) storeObject(t plumbing.ObjectType, content []byte) (plumbing.
 	if err := w.Close(); err != nil {
 		return plumbing.ZeroHash, err
 	}
-	return g.repo.Storer.SetEncodedObject(obj)
+	stored, err := g.repo.Storer.SetEncodedObject(obj)
+	if err == nil {
+		g.written = append(g.written, stored)
+	}
+	return stored, err
 }
 
 // treeEntries loads the entries of tree h by name (none for ZeroHash).
@@ -520,6 +532,9 @@ func (g *gitStore) writeCommit(tree, parent plumbing.Hash, msg string, author, c
 		return err
 	}
 	h, err := g.repo.Storer.SetEncodedObject(obj)
+	if err == nil {
+		g.written = append(g.written, h)
+	}
 	if err != nil {
 		return err
 	}
@@ -558,6 +573,7 @@ func pushPause(attempt int) time.Duration {
 }
 
 func (g *gitStore) pushOnce(ctx context.Context) error {
+	g.packPlain()
 	spec := gitconfig.RefSpec("refs/heads/" + g.branch + ":refs/heads/" + g.branch)
 	err := g.repo.PushContext(ctx, &git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{spec}, Auth: g.auth})
 	if errors.Is(err, git.NoErrAlreadyUpToDate) {
@@ -618,4 +634,43 @@ func (g *gitStore) rebase(ctx context.Context) (bool, error) {
 	committer := local.Committer
 	committer.When = time.Now()
 	return true, g.writeCommit(tree, remote, local.Message, local.Author, committer)
+}
+
+// packPlain makes pushes send objects without searching for deltas
+// (pack.window = 0). The search loads every pushed object, and the trees of
+// every directory a commit touches, into memory to compare them with each
+// other: most of a push's memory and CPU, to save some bytes of small YAML
+// files on the way to a server that repacks them anyway. Best effort.
+func (g *gitStore) packPlain() {
+	if g.repo == nil || g.packedPlain == g.repo {
+		return
+	}
+	cfg, err := g.repo.Config()
+	if err != nil {
+		return
+	}
+	if cfg.Pack.Window != 0 {
+		cfg.Pack.Window = 0
+		if err := g.repo.SetConfig(cfg); err != nil {
+			slog.Warn("can't turn off delta search for pushes", "err", err)
+			return
+		}
+	}
+	g.packedPlain = g.repo
+}
+
+// dropCaches hands back the page cache of what a pushed commit wrote: the
+// objects stored since the last call, the packs (fetched ones included), and
+// the working-tree files at paths (repo-relative). See pagecache.go.
+func (g *gitStore) dropCaches(paths []string) {
+	files := make([]string, 0, len(g.written)+len(paths))
+	for _, h := range g.written {
+		s := h.String()
+		files = append(files, filepath.Join(g.dir, ".git", "objects", s[:2], s[2:]))
+	}
+	g.written = g.written[:0]
+	for _, p := range paths {
+		files = append(files, filepath.Join(g.dir, filepath.FromSlash(p)))
+	}
+	g.drops.later(files, []string{filepath.Join(g.dir, ".git", "objects", "pack")})
 }
