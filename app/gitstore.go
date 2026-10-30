@@ -375,6 +375,15 @@ func (g *gitStore) treeOf(h plumbing.Hash) (*object.Tree, error) {
 	return c.Tree()
 }
 
+// readFile returns the file at p in commit h, and whether it exists there.
+func (g *gitStore) readFile(h plumbing.Hash, p string) ([]byte, bool, error) {
+	t, err := g.treeOf(h)
+	if err != nil {
+		return nil, false, err
+	}
+	return readTreeFile(t, p)
+}
+
 // readTreeFile returns the file at p in tree t, and whether it exists there.
 func readTreeFile(t *object.Tree, p string) ([]byte, bool, error) {
 	if t == nil {
@@ -556,7 +565,7 @@ func (g *gitStore) push(ctx context.Context) (conflicts int, err error) {
 		sleepCtx(ctx, pushPause(attempt))
 		moved, rerr := g.rebase(ctx)
 		if rerr != nil {
-			return conflicts, fmt.Errorf("%w (rebase: %v)", err, rerr)
+			return conflicts, fmt.Errorf("%w (rebase: %w)", err, rerr)
 		}
 		if !moved {
 			return conflicts, err
@@ -619,6 +628,9 @@ func (g *gitStore) rebase(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if err := g.checkClaim(own[g.cluster], entries[g.cluster]); err != nil {
+		return false, err
+	}
 	if e, ok := own[g.cluster]; ok {
 		entries[g.cluster] = e
 	} else {
@@ -634,6 +646,53 @@ func (g *gitStore) rebase(ctx context.Context) (bool, error) {
 	committer := local.Committer
 	committer.When = time.Now()
 	return true, g.writeCommit(tree, remote, local.Message, local.Author, committer)
+}
+
+// checkClaim refuses to replace the remote's directory of this cluster when
+// the remote's claim on it (see claim.go) isn't the local one: another
+// cluster pushed under the same name meanwhile.
+func (g *gitStore) checkClaim(local, remote object.TreeEntry) error {
+	remoteClaim, err := g.claimIn(remote)
+	if err != nil || remoteClaim == "" {
+		return err
+	}
+	localClaim, err := g.claimIn(local)
+	if err != nil {
+		return err
+	}
+	if localClaim != remoteClaim {
+		return &claimError{dir: g.cluster, have: remoteClaim, want: localClaim}
+	}
+	return nil
+}
+
+// claimIn returns the UID claimed in the directory tree dir, "" for none.
+func (g *gitStore) claimIn(dir object.TreeEntry) (string, error) {
+	if dir.Hash.IsZero() || dir.Mode != filemode.Dir {
+		return "", nil
+	}
+	entries, err := g.treeEntries(dir.Hash)
+	if err != nil {
+		return "", err
+	}
+	f, ok := entries[clusterIDFile]
+	if !ok {
+		return "", nil
+	}
+	b, err := object.GetBlob(g.repo.Storer, f.Hash)
+	if err != nil {
+		return "", err
+	}
+	r, err := b.Reader()
+	if err != nil {
+		return "", err
+	}
+	defer r.Close()
+	data, err := io.ReadAll(io.LimitReader(r, 4096))
+	if err != nil {
+		return "", err
+	}
+	return parseClaim(data), nil
 }
 
 // packPlain makes pushes send objects without searching for deltas
