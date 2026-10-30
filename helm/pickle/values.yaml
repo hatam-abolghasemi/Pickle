@@ -48,6 +48,13 @@ config:
   # - "*.crd.projectcalico.org"
   # Namespaces never mirrored (shell patterns like tmp-*), including their Namespace object.
   excludeNamespaces: []
+  # Types watched as metadata only (group/resource, "core" for the core group):
+  # objects with an owner are skipped without reading their spec and status,
+  # the rest are read whole. Empty list: every type is read whole.
+  metadataWatch:
+    - core/pods
+    - apps/replicasets
+    - batch/jobs
   pageSize: 50
   pagePause: 200ms
   qps: 5

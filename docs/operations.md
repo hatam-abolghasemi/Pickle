@@ -79,6 +79,6 @@ sudo kubectl -n pickle logs -f deploy/pickle
 
 Requests 20m CPU / 64Mi, limits 500m / 512Mi.
 
-Pickle keeps a 32-byte hash per object, not the objects. The rest of its memory is the Go runtime and client-go (a fixed floor of roughly 20–30 MiB), a git object cache capped at 8 MiB, and short bursts during backfill, relists and pushes. After each burst the freed memory is returned to the OS. `GOMEMLIMIT` is set from the memory limit, so the GC works harder before the container would be OOM-killed.
+Pickle keeps two 32-byte hashes per object, not the objects. The rest of its memory is the Go runtime and client-go (a floor of roughly 15 MiB), a git object cache capped at 2 MiB, and short bursts during backfill, relists and pushes. After each burst the freed memory is returned to the OS. `GOMEMLIMIT` is set from the memory limit, so the GC works harder before the container would be OOM-killed.
 
-The container's working set also counts the kernel's page cache for files in the `emptyDir`. That cache is reclaimable, so compare `container_memory_rss` with `pickle_go_heap_live_bytes` to see what pickle itself holds.
+The container's working set also counts the kernel's page cache of the files pickle writes into the `emptyDir`: the mirrored YAML and git's objects. Pickle hands those pages back about 40 seconds after a push (once the kernel has written them to disk), and after reading the repo at startup, so they don't pile up with the size of the cluster. Compare `container_memory_rss` with `pickle_go_heap_live_bytes` to see what pickle itself holds.
