@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -39,9 +39,13 @@ func main() {
 	if err != nil {
 		fatal("dynamic client", err)
 	}
-	disco, err := discovery.NewDiscoveryClientForConfig(rc)
+	disco, err := newAPIDiscovery(rc)
 	if err != nil {
 		fatal("discovery client", err)
+	}
+	meta, err := metadata.NewForConfig(rc)
+	if err != nil {
+		fatal("metadata client", err)
 	}
 
 	m := newMetrics(cfg.Cluster)
@@ -58,6 +62,9 @@ func main() {
 	e, err := newEngine(cfg, dyn, disco, store, m)
 	if err != nil {
 		fatal("engine", err)
+	}
+	if len(cfg.MetadataWatch) > 0 {
+		e.meta = meta
 	}
 	slog.Info("pickle starting", "cluster", cfg.Cluster, "branch", cfg.GitBranch, "secretFingerprints", len(cfg.FingerprintKey) > 0)
 	if err := e.run(ctx); err != nil {
