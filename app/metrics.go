@@ -13,9 +13,9 @@ import (
 type metrics struct {
 	cluster string
 
-	backfillNSTotal  atomic.Int64
-	backfillNSDone   atomic.Int64
-	backfillComplete atomic.Int64
+	backfillTypesTotal atomic.Int64
+	backfillTypesDone  atomic.Int64
+	backfillComplete   atomic.Int64
 
 	objectsTracked atomic.Int64
 	written        atomic.Int64
@@ -40,8 +40,8 @@ func (m *metrics) write(w http.ResponseWriter) {
 	g := func(name, help, typ string, v int64) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s{cluster=%q} %d\n", name, help, name, typ, name, m.cluster, v)
 	}
-	g("pickle_backfill_namespaces_total", "Namespaces to backfill.", "gauge", m.backfillNSTotal.Load())
-	g("pickle_backfill_namespaces_done", "Namespaces backfilled so far.", "gauge", m.backfillNSDone.Load())
+	g("pickle_backfill_types_total", "Resource types to backfill.", "gauge", m.backfillTypesTotal.Load())
+	g("pickle_backfill_types_done", "Resource types backfilled so far.", "gauge", m.backfillTypesDone.Load())
 	g("pickle_backfill_complete", "1 once the initial backfill has finished.", "gauge", m.backfillComplete.Load())
 	g("pickle_objects_tracked", "Objects currently mirrored in the repo.", "gauge", m.objectsTracked.Load())
 	g("pickle_objects_written_total", "Object files written (created or changed).", "counter", m.written.Load())

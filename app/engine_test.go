@@ -137,6 +137,7 @@ func TestEngineEndToEnd(t *testing.T) {
 		{Group: "example.com", Version: "v1", Resource: "widgets"}:                    "WidgetList",
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds,
+		obj(t, `{apiVersion: v1, kind: Namespace, metadata: {name: kube-system, uid: 0d4c1f3e-stg}}`),
 		obj(t, `{apiVersion: v1, kind: Namespace, metadata: {name: payments}}`),
 		obj(t, `{apiVersion: v1, kind: ConfigMap, metadata: {name: app-config, namespace: payments}, data: {LOG_LEVEL: info}}`),
 		obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments}, data: {PASSWORD: c3VwZXJzZWNyZXQ=}}`),
@@ -175,7 +176,7 @@ func TestEngineEndToEnd(t *testing.T) {
 	for _, p := range []string{
 		"stg/_kinds.txt", "stg/_cluster/namespace-payments.yaml", "stg/_cluster/clusterrole-system_view.yaml",
 		"stg/payments/configmap-app-config.yaml", "stg/payments/secret-db.yaml", "stg/payments/_secrets-referenced.txt",
-		"prod/payments/configmap-keep.yaml", "stg/_unreadable.txt",
+		"prod/payments/configmap-keep.yaml", "stg/_unreadable.txt", "stg/_cluster-id.txt",
 	} {
 		if f[p] == "" {
 			t.Errorf("remote missing %s; have %v", p, keys(f))

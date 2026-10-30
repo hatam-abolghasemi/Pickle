@@ -113,6 +113,13 @@ type engine struct {
 
 	changed    chan struct{} // something is waiting to be committed
 	rediscover chan struct{} // the set of served types may have changed
+
+	// uid identifies the cluster this instance mirrors (see claim.go); ""
+	// until claimed.
+	uid string
+	// abort stops run with an error, e.g. when another cluster claims this
+	// cluster's directory.
+	abort context.CancelCauseFunc
 }
 
 // Changes to these types can add or remove served resource types, so they
@@ -152,7 +159,13 @@ func (e *engine) headerCounts(res string) bool {
 
 func (e *engine) abs(p string) string { return filepath.Join(e.cfg.RepoDir, filepath.FromSlash(p)) }
 
-func (e *engine) run(ctx context.Context) error {
+func (e *engine) run(parent context.Context) error {
+	ctx, abort := context.WithCancelCause(parent)
+	defer abort(nil)
+	e.abort = abort
+	if err := e.claim(ctx); err != nil {
+		return err
+	}
 	res, err := e.discover()
 	if err != nil {
 		return fmt.Errorf("discovery: %w", err)
@@ -167,6 +180,9 @@ func (e *engine) run(ctx context.Context) error {
 	defer func() {
 		stopCommits()
 		<-commitsDone
+		if aborted(ctx) != nil {
+			return
+		}
 		fctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		e.flush(fctx) // push whatever is pending before exiting
@@ -175,7 +191,7 @@ func (e *engine) run(ctx context.Context) error {
 	e.activateInitial(ctx, res)
 	if err := e.runBackfill(ctx); err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return aborted(ctx)
 		}
 		return err
 	}
@@ -191,7 +207,7 @@ func (e *engine) run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return aborted(ctx)
 		case <-e.rediscover:
 			settle = time.After(rediscoveryDelay) // a Helm chart often installs several CRDs at once
 			continue
@@ -206,6 +222,60 @@ func (e *engine) run(ctx context.Context) error {
 		}
 		releaseMemory()
 	}
+}
+
+// claim records this cluster as the owner of its directory, or fails if the
+// directory already belongs to another cluster.
+func (e *engine) claim(ctx context.Context) error {
+	uid, err := clusterUID(ctx, e.dyn)
+	if err != nil {
+		return err
+	}
+	p := path.Join(e.cfg.Cluster, clusterIDFile)
+	data, err := os.ReadFile(e.abs(p))
+	switch {
+	case err == nil:
+		if have := parseClaim(data); have != "" && have != uid {
+			return &claimError{dir: e.cfg.Cluster, have: have, want: uid}
+		}
+	case !os.IsNotExist(err):
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.uid = uid
+	e.writeAuxLocked(p, renderClaim(uid))
+	return nil
+}
+
+// checkClaimLocked makes sure the head about to be built on still leaves
+// this cluster's directory to it; a claim missing from the head (the
+// directory was removed by hand) is committed again.
+func (e *engine) checkClaimLocked(head plumbing.Hash) error {
+	if e.uid == "" {
+		return nil
+	}
+	p := path.Join(e.cfg.Cluster, clusterIDFile)
+	data, inHead, err := e.git.readFile(head, p)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", p, err)
+	}
+	have := parseClaim(data)
+	if !inHead || have == "" {
+		if _, err := os.Stat(e.abs(p)); err != nil {
+			if err := e.writeFile(p, renderClaim(e.uid)); err != nil {
+				return err
+			}
+		}
+		if _, pending := e.dirty[p]; !pending {
+			e.dirty[p] = change{op: 'A'}
+		}
+		return nil
+	}
+	if have != e.uid {
+		return &claimError{dir: e.cfg.Cluster, have: have, want: e.uid}
+	}
+	return nil
 }
 
 func notify(c chan struct{}) {
@@ -553,7 +623,7 @@ func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool)
 	for {
 		l, err := ri.List(ctx, metav1.ListOptions{Limit: e.cfg.PageSize, Continue: cont})
 		if err != nil {
-			if cont != "" && apierrors.IsResourceExpired(err) {
+			if cont != "" && apierrors.IsResourceExpired(err) && live {
 				cont, seen = "", map[string]bool{} // continue token expired: start this list over
 				continue
 			}
@@ -583,7 +653,7 @@ func (e *engine) listAllMeta(ctx context.Context, r *resource, ns string, live b
 	for {
 		l, err := ri.List(ctx, metav1.ListOptions{Limit: e.cfg.PageSize, Continue: cont})
 		if err != nil {
-			if cont != "" && apierrors.IsResourceExpired(err) {
+			if cont != "" && apierrors.IsResourceExpired(err) && live {
 				cont, seen = "", map[string]bool{}
 				continue
 			}
@@ -714,7 +784,9 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	}
 
 	if r.namespaced && refKind(r.gvr.Group, r.kind) {
-		if e.idx.set(u.GetNamespace(), refObjID(r.kind, u.GetName()), refs) {
+		// During the backfill the index only holds what has been seen so
+		// far; finishBackfill writes every namespace's once it's complete.
+		if e.idx.set(u.GetNamespace(), refObjID(r.kind, u.GetName()), refs) && !e.backfill {
 			e.writeIndexLocked(u.GetNamespace())
 		}
 	}
@@ -901,52 +973,50 @@ func (e *engine) runBackfill(ctx context.Context) error {
 	}
 	e.mu.Unlock()
 
+	// One paginated list per type across all namespaces: a few requests per
+	// type instead of one per type and namespace, most of them empty.
+	types := append(clusterScoped, namespaced...)
+	e.m.backfillTypesTotal.Store(int64(len(types)))
+	slog.Info("backfill", "clusterScoped", len(clusterScoped), "namespaced", len(namespaced))
 	failed := map[string]bool{}
-	slog.Info("backfill: cluster-scoped objects", "types", len(clusterScoped))
-	for _, r := range clusterScoped {
-		if _, _, err := e.listAll(ctx, r, "", false); err != nil {
+	var namespaces []string
+	for i, r := range types {
+		_, _, err := e.listAll(ctx, r, "", false)
+		if err != nil && r.namespaced && apierrors.IsResourceExpired(err) {
+			// The list outlived etcd's compaction window; namespace by
+			// namespace, each list is short enough not to.
+			slog.Info("backfill: list too long for one pass; listing namespace by namespace", "resource", r.id())
+			if namespaces == nil && nsRes != nil {
+				if namespaces, err = e.namespaceNames(ctx, nsRes); err != nil {
+					return fmt.Errorf("list namespaces: %w", err)
+				}
+			}
+			err = nil
+			for _, ns := range namespaces {
+				if e.cfg.namespaceExcluded(ns) {
+					continue
+				}
+				if _, _, err = e.listAll(ctx, r, ns, false); err != nil {
+					break
+				}
+			}
+			if nsRes == nil {
+				err = errors.New("continue token expired and namespaces can't be listed")
+			}
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			slog.Warn("backfill list failed", "resource", r.id(), "err", err)
 			failed[r.id()] = true
 		}
-	}
-
-	var namespaces []string
-	if nsRes != nil {
-		var err error
-		if namespaces, err = e.namespaceNames(ctx, nsRes); err != nil {
-			return fmt.Errorf("list namespaces: %w", err)
-		}
-	} else {
-		namespaces = []string{""} // cannot read namespaces: fall back to cluster-wide lists
-		slog.Warn("no access to namespaces; backfilling namespaced types cluster-wide")
-	}
-	kept := namespaces[:0]
-	for _, ns := range namespaces {
-		if ns == "" || !e.cfg.namespaceExcluded(ns) {
-			kept = append(kept, ns)
-		}
-	}
-	namespaces = kept
-	e.m.backfillNSTotal.Store(int64(len(namespaces)))
-	for i, ns := range namespaces {
-		for _, r := range namespaced {
-			if _, _, err := e.listAll(ctx, r, ns, false); err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				slog.Warn("backfill list failed", "resource", r.id(), "namespace", ns, "err", err)
-				failed[r.id()] = true
-			}
-		}
-		e.m.backfillNSDone.Store(int64(i + 1))
-		slog.Info("backfill progress", "namespace", ns, "done", i+1, "total", len(namespaces), "objects", e.m.objectsTracked.Load())
+		e.m.backfillTypesDone.Store(int64(i + 1))
+		slog.Info("backfill progress", "resource", r.id(), "done", i+1, "total", len(types), "objects", e.m.objectsTracked.Load())
 	}
 
 	e.mu.Lock()
-	for _, r := range append(clusterScoped, namespaced...) {
+	for _, r := range types {
 		if !failed[r.id()] {
 			e.backfilled[r.id()] = true
 		}
@@ -987,6 +1057,9 @@ func (e *engine) finishBackfill() {
 		}
 		e.removeLocked(p, "")
 		stale++
+	}
+	for ns := range e.idx.byNS {
+		e.writeIndexLocked(ns)
 	}
 	for p := range e.aux {
 		if strings.HasSuffix(p, "/"+secretsIndexFile) {
@@ -1071,6 +1144,10 @@ func (e *engine) flush(ctx context.Context) error {
 	}
 
 	e.mu.Lock()
+	if err := e.checkClaimLocked(head); err != nil {
+		e.mu.Unlock()
+		return e.failFlush(err)
+	}
 	changes := e.unpushed
 	for p, c := range e.dirty {
 		changes[p] = c
@@ -1103,6 +1180,9 @@ func (e *engine) flush(ctx context.Context) error {
 		}
 		e.mu.Unlock()
 		e.m.pushFailures.Add(1)
+		if errors.Is(err, errClusterClaimed) {
+			return e.failFlush(err)
+		}
 		slog.Warn("commit/push failed; will retry", "changes", len(changes), "err", err)
 		return err
 	}
@@ -1115,6 +1195,21 @@ func (e *engine) flush(ctx context.Context) error {
 	}
 	releaseMemory()
 	return nil
+}
+
+// failFlush stops pickle when its directory belongs to another cluster:
+// retrying would only fight over it.
+func (e *engine) failFlush(err error) error {
+	if errors.Is(err, errClusterClaimed) {
+		slog.Error("stopping: this cluster's directory is taken", "err", err)
+		if e.abort != nil {
+			e.abort(err)
+		}
+		return err
+	}
+	e.m.pushFailures.Add(1)
+	slog.Warn("cannot check this cluster's claim on its directory; will retry", "err", err)
+	return err
 }
 
 // settleLocked compares each changed path with the head it is about to be

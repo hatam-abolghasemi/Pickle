@@ -12,6 +12,7 @@ import (
 const (
 	clusterScopedDir = "_cluster"
 	kindsFile        = "_kinds.txt"
+	clusterIDFile    = "_cluster-id.txt"
 	secretsIndexFile = "_secrets-referenced.txt"
 	unreadableFile   = "_unreadable.txt"
 )
