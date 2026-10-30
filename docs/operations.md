@@ -6,7 +6,7 @@ Prometheus format on `:9090/metrics`, exposed by the `pickle` Service.
 
 | Metric | |
 |---|---|
-| `pickle_backfill_namespaces_total` / `_done` | Backfill progress |
+| `pickle_backfill_types_total` / `_done` | Backfill progress |
 | `pickle_backfill_complete` | `1` after the initial sync |
 | `pickle_objects_tracked` | Objects in the repo |
 | `pickle_objects_written_total` / `_deleted_total` | Files written / removed |
@@ -53,7 +53,7 @@ sudo kubectl -n pickle logs -f deploy/pickle
 | Line | Meaning |
 |---|---|
 | `watching types=N unreadable=M` | Startup |
-| `backfill progress namespace=... done=... total=...` | One per namespace |
+| `backfill progress resource=... done=... total=...` | One per type |
 | `backfill complete objects=N staleRemoved=M` | Initial sync done |
 | `pushed changes=N` | A commit went out |
 | `commit/push failed; will retry` | Changes are kept and retried |
@@ -64,6 +64,8 @@ sudo kubectl -n pickle logs -f deploy/pickle
 ## Troubleshooting
 
 **`_unreadable.txt` appeared.** Each line names a type and why. `forbidden`: a policy or ClusterRole blocks it. `discovery failed`: an aggregated API (e.g. metrics-server) is down. Once fixed, the type is picked up as soon as its APIService reports a change (or at the next `PICKLE_REDISCOVERY_INTERVAL`, if set) and the file disappears. For an authorization change that no object reflects, restart pickle or set an interval.
+
+**`mirrors another cluster (kube-system UID ...)`.** Pickle exits because `<cluster>/` in the repo belongs to a different cluster: two installs share one `PICKLE_CLUSTER`. Give each cluster its own name. If the directory really is this cluster's (the cluster was rebuilt, so `kube-system` has a new UID), delete `<cluster>/_cluster-id.txt` from the repo and restart pickle; it claims the directory again on its next start.
 
 **`known_hosts (required ...)`.** The `pickle-git` Secret lacks `known_hosts`; recreate it with `ssh-keyscan` output.
 

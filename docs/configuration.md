@@ -8,7 +8,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 
 | Variable | Default | |
 |---|---|---|
-| `PICKLE_CLUSTER` | required | Root directory in the repo (`a-z 0-9 -`) |
+| `PICKLE_CLUSTER` | required | Root directory in the repo (`a-z 0-9 -`), one per cluster: a directory another cluster has claimed is refused |
 | `PICKLE_GIT_URL` | required | `git@host:path`, `ssh://...` or `https://...`, never with credentials in it |
 | `PICKLE_GIT_BRANCH` | `main` | Created on first push |
 | `PICKLE_COMMIT_DELAY` | `10s` | Commit once changes have been quiet this long |
@@ -61,7 +61,7 @@ config:
     - tmp-*
 ```
 
-Excluded types are never watched or listed, so they cost nothing. Excluded namespaces are skipped in the backfill, and their events are dropped, including the Namespace object itself. Files mirrored before an exclusion are removed on the next start, in the `initial sync complete` commit.
+Excluded types are never watched or listed, so they cost nothing. Objects in excluded namespaces are skipped in the backfill, and their events are dropped, including the Namespace object itself. Files mirrored before an exclusion are removed on the next start, in the `initial sync complete` commit.
 
 These come on top of the built-in exclusions in [how it works](how-it-works.md#skipped).
 

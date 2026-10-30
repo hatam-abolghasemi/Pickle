@@ -23,6 +23,7 @@ A 3 AM `kubectl edit`, twelve Helm defaults nobody wrote down, a webhook an oper
 
 ```text
 stg/
+├── _cluster-id.txt
 ├── _cluster/
 │   ├── namespace-payments.yaml
 │   └── storageclass-ceph-rbd.yaml
