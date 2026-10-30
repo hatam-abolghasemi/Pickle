@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,8 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/metadata"
 )
 
 // Pure runtime churn or always-derived types; never mirrored.
@@ -54,6 +55,8 @@ type resource struct {
 	kind       string
 	namespaced bool
 	token      string
+	// metaOnly: watched and listed as metadata only (see handleMeta).
+	metaOnly bool
 }
 
 func (r *resource) id() string { return groupName(r.gvr.Group) + "/" + r.gvr.Resource }
@@ -63,6 +66,9 @@ func (r *resource) isSecret() bool { return r.gvr.Group == "" && r.gvr.Resource 
 type entry struct {
 	hash [32]byte
 	res  string // resource id; "" if unknown (never auto-deleted)
+	// src is the sourceHash the file was last rendered from; zero when not
+	// known (loaded from the repo at startup).
+	src [32]byte
 }
 
 type change struct {
@@ -78,8 +84,11 @@ type engine struct {
 	cfg   *config
 	dyn   dynamic.Interface
 	disco discoverer
-	git   *gitStore
-	m     *metrics
+	// meta reads metadata only, for the types in cfg.MetadataWatch; nil:
+	// every type is read whole.
+	meta metadata.Interface
+	git  *gitStore
+	m    *metrics
 
 	flushMu sync.Mutex
 
@@ -210,15 +219,15 @@ func notify(c chan struct{}) {
 
 func (e *engine) discover() ([]*resource, error) {
 	lists, err := e.disco.ServerPreferredResources()
+	var gdf *errPartialDiscovery
 	if err != nil {
-		if !discovery.IsGroupDiscoveryFailedError(err) || len(lists) == 0 {
+		if !errors.As(err, &gdf) || len(lists) == 0 {
 			return nil, err
 		}
 		slog.Warn("partial discovery (some API groups unavailable)", "err", err)
 	}
 	broken := map[string]string{}
-	var gdf *discovery.ErrGroupDiscoveryFailed
-	if errors.As(err, &gdf) {
+	if gdf != nil {
 		for gv, gerr := range gdf.Groups {
 			broken[gv.String()] = "discovery failed: " + gerr.Error()
 		}
@@ -234,6 +243,7 @@ func (e *engine) discover() ([]*resource, error) {
 				continue
 			}
 			res := &resource{gvr: gv.WithResource(r.Name), kind: r.Kind, namespaced: r.Namespaced}
+			res.metaOnly = e.meta != nil && e.cfg.MetadataWatch[res.id()]
 			if e.cfg.excluded(gv.Group, r.Name, r.Kind) {
 				excluded = append(excluded, res)
 				continue
@@ -432,9 +442,14 @@ func (e *engine) watchLoop(ctx context.Context, r *resource, rv string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		timeout := int64(1800 + rand.IntN(1800)) // resumes from rv, so a reconnect costs one request; spread over 30-60 minutes
-		w, err := e.dyn.Resource(r.gvr).Watch(ctx, metav1.ListOptions{
-			ResourceVersion: rv, AllowWatchBookmarks: true, TimeoutSeconds: &timeout,
-		})
+		opts := metav1.ListOptions{ResourceVersion: rv, AllowWatchBookmarks: true, TimeoutSeconds: &timeout}
+		var w watch.Interface
+		var err error
+		if r.metaOnly {
+			w, err = e.meta.Resource(r.gvr).Watch(ctx, opts)
+		} else {
+			w, err = e.dyn.Resource(r.gvr).Watch(ctx, opts)
+		}
 		if err != nil {
 			switch {
 			case ctx.Err() != nil:
@@ -454,7 +469,7 @@ func (e *engine) watchLoop(ctx context.Context, r *resource, rv string) {
 		}
 		backoff = time.Second
 		var expired bool
-		rv, expired = e.consume(r, w, rv)
+		rv, expired = e.consume(ctx, r, w, rv)
 		w.Stop()
 		if expired {
 			rv = e.resync(ctx, r)
@@ -464,22 +479,26 @@ func (e *engine) watchLoop(ctx context.Context, r *resource, rv string) {
 	}
 }
 
-func (e *engine) consume(r *resource, w watch.Interface, rv string) (string, bool) {
+func (e *engine) consume(ctx context.Context, r *resource, w watch.Interface, rv string) (string, bool) {
 	for ev := range w.ResultChan() {
 		switch ev.Type {
 		case watch.Added, watch.Modified, watch.Deleted:
-			u, ok := ev.Object.(*unstructured.Unstructured)
-			if !ok {
+			switch o := ev.Object.(type) {
+			case *unstructured.Unstructured:
+				e.handle(r, o, ev.Type == watch.Deleted, true)
+				rv = o.GetResourceVersion()
+			case *metav1.PartialObjectMetadata:
+				e.handleMeta(ctx, r, o, ev.Type == watch.Deleted, true)
+				rv = o.ResourceVersion
+			default:
 				continue
 			}
-			e.handle(r, u, ev.Type == watch.Deleted, true)
-			rv = u.GetResourceVersion()
 			if discoveryTriggers[r.id()] {
 				notify(e.rediscover)
 			}
 		case watch.Bookmark:
-			if u, ok := ev.Object.(*unstructured.Unstructured); ok {
-				rv = u.GetResourceVersion()
+			if o, ok := ev.Object.(metav1.Object); ok {
+				rv = o.GetResourceVersion()
 			}
 		case watch.Error:
 			err := apierrors.FromObject(ev.Object)
@@ -522,6 +541,9 @@ func (e *engine) resync(ctx context.Context, r *resource) string {
 
 // listAll pages through a type (optionally one namespace) handling every object.
 func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool) (string, map[string]bool, error) {
+	if r.metaOnly {
+		return e.listAllMeta(ctx, r, ns, live)
+	}
 	seen := map[string]bool{}
 	var ri dynamic.ResourceInterface = e.dyn.Resource(r.gvr)
 	if ns != "" {
@@ -550,6 +572,98 @@ func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool)
 	}
 }
 
+// listAllMeta is listAll for a metadata-only type.
+func (e *engine) listAllMeta(ctx context.Context, r *resource, ns string, live bool) (string, map[string]bool, error) {
+	seen := map[string]bool{}
+	var ri metadata.ResourceInterface = e.meta.Resource(r.gvr)
+	if ns != "" {
+		ri = e.meta.Resource(r.gvr).Namespace(ns)
+	}
+	cont := ""
+	for {
+		l, err := ri.List(ctx, metav1.ListOptions{Limit: e.cfg.PageSize, Continue: cont})
+		if err != nil {
+			if cont != "" && apierrors.IsResourceExpired(err) {
+				cont, seen = "", map[string]bool{}
+				continue
+			}
+			return "", nil, err
+		}
+		for i := range l.Items {
+			seen[e.handleMeta(ctx, r, &l.Items[i], false, live)] = true
+		}
+		if cont = l.GetContinue(); cont == "" {
+			return l.GetResourceVersion(), seen, nil
+		}
+		sleepCtx(ctx, e.cfg.PagePause)
+		if ctx.Err() != nil {
+			return "", nil, ctx.Err()
+		}
+	}
+}
+
+// handleMeta handles an object of a metadata-only type. An owned object is
+// skipped from its metadata alone, as handle would skip it; one without an
+// owner (a bare Pod, a Job no CronJob made) is read whole and handled as
+// usual. Most such objects are owned and change all the time (a Pod's
+// status), so this spares decoding their spec and status on every change.
+// Returns the object's repo path, like handle.
+func (e *engine) handleMeta(ctx context.Context, r *resource, m *metav1.PartialObjectMetadata, deleted, live bool) string {
+	if deleted || len(m.OwnerReferences) > 0 {
+		return e.handle(r, metaObject(m), deleted, live)
+	}
+	ri := e.dyn.Resource(r.gvr)
+	var u *unstructured.Unstructured
+	var err error
+	if r.namespaced {
+		u, err = ri.Namespace(m.Namespace).Get(ctx, m.Name, metav1.GetOptions{})
+	} else {
+		u, err = ri.Get(ctx, m.Name, metav1.GetOptions{})
+	}
+	switch {
+	case err == nil:
+		return e.handle(r, u, false, live)
+	case apierrors.IsNotFound(err):
+		// Deleted meanwhile: its delete event follows.
+	default:
+		slog.Warn("get failed", "resource", r.id(), "namespace", m.Namespace, "name", m.Name, "err", err)
+	}
+	// Counted as seen either way, so a resync never drops a file for an
+	// object that exists.
+	return objPath(e.cfg.Cluster, r.namespaced, m.Namespace, r.token, m.Name)
+}
+
+// metaObject is the part of an object handle reads to skip or remove it:
+// name, namespace, owners, and who changed it last.
+func metaObject(m *metav1.PartialObjectMetadata) *unstructured.Unstructured {
+	md := map[string]any{"name": m.Name}
+	if m.Namespace != "" {
+		md["namespace"] = m.Namespace
+	}
+	if len(m.OwnerReferences) > 0 {
+		owners := make([]any, len(m.OwnerReferences))
+		for i, o := range m.OwnerReferences {
+			owners[i] = map[string]any{"apiVersion": o.APIVersion, "kind": o.Kind, "name": o.Name, "uid": string(o.UID)}
+		}
+		md["ownerReferences"] = owners
+	}
+	if len(m.ManagedFields) > 0 {
+		mfs := make([]any, 0, len(m.ManagedFields))
+		for _, f := range m.ManagedFields {
+			mf := map[string]any{"manager": f.Manager, "operation": string(f.Operation)}
+			if f.Subresource != "" {
+				mf["subresource"] = f.Subresource
+			}
+			if f.Time != nil {
+				mf["time"] = f.Time.UTC().Format(time.RFC3339)
+			}
+			mfs = append(mfs, mf)
+		}
+		md["managedFields"] = mfs
+	}
+	return &unstructured.Unstructured{Object: map[string]any{"metadata": md}}
+}
+
 // ---- object handling ----
 
 // handle mirrors one object (or its deletion) to disk. live=true for watch/resync
@@ -567,9 +681,11 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 		skip = true
 	}
 
-	var content []byte
+	var src []byte
+	var srcSum [32]byte
 	var h header
 	var refs refSet
+	headerCounts := e.headerCounts(r.id())
 	if !deleted && !skip {
 		h = readHeader(u)
 		n := normalize(u)
@@ -577,10 +693,11 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 			maskSecret(n, e.cfg.FingerprintKey)
 		}
 		var err error
-		if content, err = render(h, n); err != nil {
+		if src, err = json.Marshal(n.Object); err != nil {
 			slog.Warn("render failed", "path", p, "err", err)
 			return p
 		}
+		srcSum = sourceHash(h, src, headerCounts)
 		refs = secretRefs(r.gvr.Group, r.kind, u.Object)
 	}
 
@@ -603,19 +720,31 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	}
 
 	if deleted || skip {
-		e.removeLocked(p, readHeader(u).manager)
+		if _, tracked := e.entries[p]; tracked {
+			e.removeLocked(p, readHeader(u).manager)
+		}
 		return p
 	}
-	sum := contentHash(content, e.headerCounts(r.id()))
 	old, existed := e.entries[p]
+	if existed && old.src == srcSum {
+		return p // rendered from exactly this before
+	}
+	content, err := renderJSON(h, src)
+	if err != nil {
+		slog.Warn("render failed", "path", p, "err", err)
+		return p
+	}
+	sum := contentHash(content, headerCounts)
 	if existed && old.hash == sum {
+		old.src = srcSum
+		e.entries[p] = old
 		return p
 	}
 	if err := e.writeFile(p, content); err != nil {
 		slog.Error("write failed", "path", p, "err", err)
 		return p
 	}
-	e.entries[p] = entry{hash: sum, res: r.id()}
+	e.entries[p] = entry{hash: sum, res: r.id(), src: srcSum}
 	e.m.written.Add(1)
 	op := byte('M')
 	if !existed {
@@ -731,7 +860,7 @@ func (e *engine) loadExisting() error {
 		}
 		rel, _ := filepath.Rel(e.cfg.RepoDir, full)
 		rel = filepath.ToSlash(rel)
-		data, err := os.ReadFile(full)
+		data, err := readUncached(full)
 		if err != nil {
 			return err
 		}
@@ -981,6 +1110,7 @@ func (e *engine) flush(ctx context.Context) error {
 		e.m.commits.Add(1)
 		e.m.lastPush.Store(time.Now().Unix())
 		slog.Info("pushed", "changes", len(changes), "note", note, "conflicts", conflicts)
+		e.git.dropCaches(paths)
 		e.git.compact(ctx)
 	}
 	releaseMemory()

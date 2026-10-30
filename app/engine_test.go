@@ -284,7 +284,7 @@ func TestDiscoveryTriggers(t *testing.T) {
 	send := func(r *resource, o string) {
 		w := watch.NewFake()
 		go func() { w.Add(obj(t, o)); w.Stop() }()
-		e.consume(r, w, "")
+		e.consume(context.Background(), r, w, "")
 	}
 	send(cm, `{apiVersion: v1, kind: ConfigMap, metadata: {name: a, namespace: p}}`)
 	select {

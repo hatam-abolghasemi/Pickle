@@ -45,6 +45,9 @@ type config struct {
 	Exclude           []excludeRule
 	ExcludeNamespaces []string
 	CompactEvery      int
+	// MetadataWatch: resource ids ("group/resource", "core" for the core
+	// group) watched and listed as metadata only, see metadataWatched.
+	MetadataWatch map[string]bool
 
 	Deprecated []string
 }
@@ -188,6 +191,9 @@ func loadConfig() (*config, error) {
 		return nil, err
 	}
 	c.ExcludeNamespaces = splitList(os.Getenv("PICKLE_EXCLUDE_NAMESPACES"))
+	if c.MetadataWatch, err = parseMetadataWatch(os.LookupEnv("PICKLE_METADATA_WATCH")); err != nil {
+		return nil, err
+	}
 	for _, pat := range c.ExcludeNamespaces {
 		if _, err := path.Match(pat, ""); err != nil {
 			return nil, fmt.Errorf("PICKLE_EXCLUDE_NAMESPACES: invalid pattern %q", pat)
@@ -303,4 +309,29 @@ func intEnv(k string, def int) (int, error) {
 		return 0, fmt.Errorf("%s: invalid positive integer %q", k, v)
 	}
 	return n, nil
+}
+
+// defaultMetadataWatch: types whose objects nearly always have an owner
+// (a ReplicaSet's Pods, a Deployment's ReplicaSets, a CronJob's Jobs), so
+// pickle skips them, and whose status changes all the time.
+const defaultMetadataWatch = "core/pods,apps/replicasets,batch/jobs"
+
+// parseMetadataWatch reads PICKLE_METADATA_WATCH: resource ids watched as
+// metadata only. Unset: the default; empty: none.
+func parseMetadataWatch(v string, set bool) (map[string]bool, error) {
+	if !set {
+		v = defaultMetadataWatch
+	}
+	out := map[string]bool{}
+	for _, id := range splitList(v) {
+		g, r, ok := strings.Cut(id, "/")
+		if !ok || g == "" || r == "" || strings.Contains(r, "/") {
+			return nil, fmt.Errorf("PICKLE_METADATA_WATCH: invalid entry %q (use group/resource, core/pods for the core group)", id)
+		}
+		if id == secretsID {
+			return nil, fmt.Errorf("PICKLE_METADATA_WATCH: %s can't be watched as metadata only", id)
+		}
+		out[id] = true
+	}
+	return out, nil
 }

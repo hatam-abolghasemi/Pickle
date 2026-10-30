@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -36,15 +37,32 @@ func readHeader(u *unstructured.Unstructured) header {
 	var h header
 	var latest time.Time
 	argoManaged := false
-	for _, mf := range u.GetManagedFields() {
-		if mf.Manager == "argocd-controller" || mf.Manager == "argocd-application-controller" {
-			argoManaged = true
-		}
-		if mf.Subresource == "status" || mf.Time == nil {
+	// Read straight from the decoded map: GetManagedFields converts every
+	// entry, fieldsV1 included, into typed structs by reflection, the
+	// costliest step of handling an event, for four strings.
+	md, _ := u.Object["metadata"].(map[string]any)
+	mfs, _ := md["managedFields"].([]any)
+	for _, raw := range mfs {
+		mf, ok := raw.(map[string]any)
+		if !ok {
 			continue
 		}
-		if t := mf.Time.Time; h.manager == "" || t.After(latest) {
-			latest, h.manager, h.operation = t, mf.Manager, string(mf.Operation)
+		manager, _ := mf["manager"].(string)
+		if manager == "argocd-controller" || manager == "argocd-application-controller" {
+			argoManaged = true
+		}
+		sub, _ := mf["subresource"].(string)
+		ts, _ := mf["time"].(string)
+		if sub == "status" || ts == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			continue
+		}
+		if h.manager == "" || t.After(latest) {
+			op, _ := mf["operation"].(string)
+			latest, h.manager, h.operation = t, manager, op
 		}
 	}
 	if !latest.IsZero() {
@@ -224,9 +242,35 @@ func stripHeader(content []byte) []byte {
 
 // render produces the exact bytes written to the repo.
 func render(h header, n *unstructured.Unstructured) ([]byte, error) {
-	body, err := yaml.Marshal(n.Object)
+	j, err := json.Marshal(n.Object)
+	if err != nil {
+		return nil, err
+	}
+	return renderJSON(h, j)
+}
+
+// renderJSON is render from n.Object's JSON (sigs.k8s.io/yaml.Marshal is
+// json.Marshal then JSONToYAML: the same bytes).
+func renderJSON(h header, j []byte) ([]byte, error) {
+	body, err := yaml.JSONToYAML(j)
 	if err != nil {
 		return nil, err
 	}
 	return append([]byte(h.render()), body...), nil
+}
+
+// sourceHash identifies what a file is rendered from: the normalized
+// object's JSON, plus the header when it counts (see contentHash). Same
+// source, same file body, so an event that leaves it unchanged (a status
+// update, a heartbeat) needs no YAML rendering at all.
+func sourceHash(h header, j []byte, headerCounts bool) [32]byte {
+	if !headerCounts {
+		return sha256.Sum256(j)
+	}
+	d := sha256.New()
+	d.Write([]byte(h.render()))
+	d.Write(j)
+	var out [32]byte
+	d.Sum(out[:0])
+	return out
 }
