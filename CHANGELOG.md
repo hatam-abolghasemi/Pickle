@@ -4,6 +4,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-11-01
+
+### Changed
+
+Git work no longer grows with the repo or with the number of clusters sharing the branch. In a test repo of four clusters and 52,000 files (a 31 MiB pack), a sync cycle of a 3-file change went from 6.5 s, 350 MiB allocated and a 140-195 MiB heap peak to 60 ms, 2.3 MiB allocated and a 7 MiB peak; the local store stays at 5 MiB instead of growing 31 MiB per cycle.
+
+- Fetches are incremental. Each fetch asked for the branch head at depth 1, and without thin packs, which go-git can't take, the server answered with the whole tree of the head every time: every cluster's directory, downloaded, parsed and indexed on each cycle. Each one also left a pack whose index stayed in memory until the next compaction, so the heap grew with every cycle, up to `GOMEMLIMIT`. Pickle now tells the server which commits it has and receives only what was committed since. If the branch's history was rewritten and the server shares no commit with the local clone, the head is downloaded afresh, never the rewritten history.
+- Pushes send only the objects along the changed paths. go-git's push walked the entire tree of the remote head, and of every shallow commit since the last compaction, to work out what the server already had.
+- The local store is sparse: it keeps the head commit, its root tree and this cluster's directory, nothing of other clusters' directories. The first clone streams the pack to a file and indexes it in a few MiB instead of through go-git's parser, which held up to 96 MiB of delta bases: the startup peak went from 144 MiB to 21 MiB of heap in the test repo. Only this cluster's files are written to the working tree.
+- Compaction copies what pickle reads into a new local store instead of cloning the branch again: no network, and 14 MiB instead of 232 MiB at peak.
+- CustomResourceDefinitions are listed 5 per page whatever `PICKLE_PAGE_SIZE` says: a CRD carries its whole OpenAPI schema, often hundreds of KiB, and a page is decoded whole into memory.
+- Default resources are now requests 48Mi, limits 128Mi (from 64Mi and 512Mi).
+
 ## [1.0.5] - 2026-10-30
 
 ### Added
@@ -110,7 +123,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.2...v1.0.3
