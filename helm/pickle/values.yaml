@@ -21,7 +21,7 @@ git:
   authorName: pickle
   # Defaults to pickle@<cluster>.local.
   authorEmail: ""
-  # Replace the local clone with a fresh shallow one after this many commits.
+  # Rebuild the local store from what pickle reads of it after this many commits (no network).
   compactEvery: 256
 
 secrets:
@@ -93,10 +93,10 @@ podLabels: {}
 resources:
   requests:
     cpu: 20m
-    memory: 64Mi
+    memory: 48Mi
   limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 128Mi
 
 # Size limit of the emptyDir holding the local clone.
 dataSizeLimit: 2Gi
