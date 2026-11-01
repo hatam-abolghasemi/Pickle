@@ -21,7 +21,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_PAGE_SIZE` | `50` | Objects per LIST page |
 | `PICKLE_PAGE_PAUSE` | `200ms` | Pause between pages |
 | `PICKLE_QPS` / `PICKLE_BURST` | `5` / `10` | API rate limit |
-| `PICKLE_GIT_COMPACT_EVERY` | `256` | Commits between local clone compactions |
+| `PICKLE_GIT_COMPACT_EVERY` | `256` | Commits between local store compactions (local only, no network) |
 | `PICKLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `PICKLE_METRICS_ADDR` | `:9090` | `/metrics` and `/healthz` |
 | `PICKLE_GIT_SSH_USER` | `git` | |

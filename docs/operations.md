@@ -59,7 +59,8 @@ sudo kubectl -n pickle logs -f deploy/pickle
 | `commit/push failed; will retry` | Changes are kept and retried |
 | `new readable type resource=...` | A new type was picked up |
 | `excluded by PICKLE_EXCLUDE resource=...` | A type matched an exclusion |
-| `local git store compacted` | The local clone was replaced by a fresh shallow one |
+| `local git store compacted` | The local store was replaced by a sparse copy of itself (no network) |
+| `the remote branch shares no commit with the local clone` | The branch's history was rewritten; the head is downloaded afresh |
 
 ## Troubleshooting
 
@@ -79,8 +80,10 @@ sudo kubectl -n pickle logs -f deploy/pickle
 
 ## Resources
 
-Requests 20m CPU / 64Mi, limits 500m / 512Mi.
+Requests 20m CPU / 48Mi, limits 500m / 128Mi.
 
-Pickle keeps two 32-byte hashes per object, not the objects. The rest of its memory is the Go runtime and client-go (a floor of roughly 15 MiB), a git object cache capped at 2 MiB, and short bursts during backfill, relists and pushes. After each burst the freed memory is returned to the OS. `GOMEMLIMIT` is set from the memory limit, so the GC works harder before the container would be OOM-killed.
+Pickle keeps two 32-byte hashes per object, not the objects, and of the Git repo only the head's root tree and its own cluster's directory. The rest of its memory is the Go runtime and client-go (a floor of roughly 15 MiB), a git object cache capped at 2 MiB, and short bursts during backfill, relists and pushes. After each burst the freed memory is returned to the OS. `GOMEMLIMIT` is set from the memory limit, so the GC works harder before the container would be OOM-killed.
+
+None of the Git work grows with the repo or with the number of clusters sharing the branch, except the first download at startup, which is streamed through a file and indexed in a few MiB. In a test repo of four clusters and 52,000 files (a 31 MiB pack), the startup clone peaked at 21 MiB of heap and each sync cycle at 7 MiB. Big list pages are the other burst: CustomResourceDefinitions, often hundreds of KiB each, are listed 5 per page whatever `PICKLE_PAGE_SIZE` says.
 
 The container's working set also counts the kernel's page cache of the files pickle writes into the `emptyDir`: the mirrored YAML and git's objects. Pickle hands those pages back about 40 seconds after a push (once the kernel has written them to disk), and after reading the repo at startup, so they don't pile up with the size of the cluster. Compare `container_memory_rss` with `pickle_go_heap_live_bytes` to see what pickle itself holds.
