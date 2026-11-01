@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,8 +20,12 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
+	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-git/go-git/v5/storage/filesystem"
@@ -32,9 +37,13 @@ import (
 // If another cluster pushes first, this cluster's directory is grafted onto the
 // new remote head and pushed again; no merge is ever needed.
 //
-// The clone is shallow: pickle only ever needs the remote head to build on, so
-// history never has to be downloaded, kept on disk or held in memory. Objects
-// left behind by earlier cycles are dropped by compact.
+// The local store is shallow and sparse. Pickle only ever reads the remote
+// head's root tree and this cluster's directory, so after the first download
+// it keeps just those: other clusters' directories are referenced by hash in
+// the root tree and never stored, read or walked. Fetches are incremental
+// (only what other clusters changed since the last one), and pushes send only
+// the objects along the paths this cluster changed. Objects left behind by
+// earlier cycles are dropped by compact, without touching the network.
 type gitStore struct {
 	repo        *git.Repository
 	dir         string
@@ -48,8 +57,6 @@ type gitStore struct {
 	compactEvery int
 	sinceCompact int
 
-	// packedPlain is the repo already set to push without delta search.
-	packedPlain *git.Repository
 	// written: objects stored since their page cache was last dropped.
 	written []plumbing.Hash
 	drops   dropper
@@ -72,7 +79,7 @@ func openGitStore(cfg *config) (*gitStore, error) {
 	if g.compactEvery <= 0 {
 		g.compactEvery = defaultCompactEvery
 	}
-	for _, leftover := range []string{gitCompactDir, gitOldDir} {
+	for _, leftover := range []string{gitCompactDir, gitOldDir, gitFullDir} {
 		if err := os.RemoveAll(filepath.Join(g.dir, leftover)); err != nil {
 			return nil, err
 		}
@@ -102,12 +109,15 @@ const (
 	cloneMarker   = "pickle-clone-incomplete"
 	gitCompactDir = ".git-compact"
 	gitOldDir     = ".git-old"
+	gitFullDir    = ".git-full"
 )
 
-// initialClone checks out the branch head (depth 1) into an empty directory.
-// A marker inside .git (where a hard reset never looks) is removed only once
-// the checkout is complete, so an interrupted clone is redone on the next start.
-// A non-empty directory without a .git is refused, never deleted.
+// initialClone downloads the branch head (depth 1), keeps only what pickle
+// reads of it (see downloadSnapshot) and writes this cluster's directory into an
+// empty worktree; other clusters' files are never written out. A marker inside
+// .git is removed only once the checkout is complete, so an interrupted clone
+// is redone on the next start. A non-empty directory without a .git is
+// refused, never deleted.
 func (g *gitStore) initialClone() error {
 	entries, err := os.ReadDir(g.dir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -116,14 +126,30 @@ func (g *gitStore) initialClone() error {
 	if len(entries) > 0 {
 		return fmt.Errorf("PICKLE_REPO_DIR %s is not empty and is not a pickle clone; refusing to touch it", g.dir)
 	}
-	marker := filepath.Join(g.dir, ".git", cloneMarker)
-	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(g.dir, ".git"), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(g.dir, ".git", cloneMarker), nil, 0o644); err != nil {
 		return err
 	}
-	if g.repo, err = g.cloneInto(context.Background(), ".git"); err != nil {
+	st := g.storage(gitCompactDir)
+	if _, err := g.initStore(st); err != nil {
+		return err
+	}
+	if _, err := g.downloadSnapshot(context.Background(), st, filepath.Join(g.dir, gitFullDir)); err != nil {
+		os.RemoveAll(filepath.Join(g.dir, gitCompactDir))
+		return fmt.Errorf("clone: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(g.dir, gitCompactDir, cloneMarker), nil, 0o644); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(g.dir, ".git")); err != nil {
+		return err
+	}
+	if err := os.Rename(filepath.Join(g.dir, gitCompactDir), filepath.Join(g.dir, ".git")); err != nil {
+		return err
+	}
+	if g.repo, err = git.Open(g.storage(".git"), osfs.New(g.dir)); err != nil {
 		return err
 	}
 	head, err := g.repo.Reference(plumbing.NewBranchReferenceName(g.branch), true)
@@ -132,16 +158,78 @@ func (g *gitStore) initialClone() error {
 	case err != nil:
 		return err
 	default:
-		wt, err := g.repo.Worktree()
-		if err != nil {
-			return err
-		}
-		if err := wt.Reset(&git.ResetOptions{Commit: head.Hash(), Mode: git.HardReset}); err != nil {
+		if err := g.checkout(head.Hash()); err != nil {
 			return fmt.Errorf("checkout: %w", err)
 		}
 	}
 	g.drops.later(nil, []string{g.dir}) // the checkout: read back only if an object changes
-	return os.Remove(marker)
+	return os.Remove(filepath.Join(g.dir, ".git", cloneMarker))
+}
+
+// checkout writes this cluster's directory of commit h into the worktree,
+// one file at a time.
+func (g *gitStore) checkout(h plumbing.Hash) error {
+	root, err := g.rootTree(h)
+	if err != nil || root.IsZero() {
+		return err
+	}
+	entries, err := g.treeEntries(root)
+	if err != nil {
+		return err
+	}
+	e, ok := entries[g.cluster]
+	if !ok || e.Mode != filemode.Dir {
+		return nil
+	}
+	return g.checkoutTree(e.Hash, filepath.Join(g.dir, g.cluster))
+}
+
+func (g *gitStore) checkoutTree(h plumbing.Hash, dir string) error {
+	t, err := object.GetTree(g.repo.Storer, h)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, e := range t.Entries {
+		if strings.ContainsAny(e.Name, `/\`) || e.Name == "." || e.Name == ".." || e.Name == ".git" {
+			return fmt.Errorf("unsafe path %q in tree %s", e.Name, h)
+		}
+		p := filepath.Join(dir, e.Name)
+		switch {
+		case e.Mode == filemode.Dir:
+			if err := g.checkoutTree(e.Hash, p); err != nil {
+				return err
+			}
+		case e.Mode.IsFile():
+			if err := g.checkoutBlob(e.Hash, p); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (g *gitStore) checkoutBlob(h plumbing.Hash, p string) error {
+	b, err := object.GetBlob(g.repo.Storer, h)
+	if err != nil {
+		return err
+	}
+	r, err := b.Reader()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // clearDir empties dir without removing dir itself (it may be a mount point).
@@ -163,12 +251,9 @@ func (g *gitStore) storage(gitDir string) *filesystem.Storage {
 	return filesystem.NewStorage(osfs.New(filepath.Join(g.dir, gitDir)), cache.NewObjectLRU(objectCacheSize))
 }
 
-// cloneInto fetches the branch tip (depth 1) into a new object store at
-// <dir>/<gitDir>, with dir as its worktree. Worktree files are not touched.
-// An empty remote or a missing branch gives an empty repository; the first push
-// creates the branch.
-func (g *gitStore) cloneInto(ctx context.Context, gitDir string) (*git.Repository, error) {
-	st := g.storage(gitDir)
+// initStore initializes an empty object store with the origin remote and HEAD
+// pointing at the branch.
+func (g *gitStore) initStore(st *filesystem.Storage) (*git.Repository, error) {
 	repo, err := git.Init(st, nil) // no worktree here: Init would write a .git pointer file into it
 	if err != nil {
 		return nil, err
@@ -188,60 +273,166 @@ func (g *gitStore) cloneInto(ctx context.Context, gitDir string) (*git.Repositor
 	if err := repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branchRef)); err != nil {
 		return nil, err
 	}
-	head, err := fetchHead(ctx, repo, g.branch, g.auth)
-	if err != nil {
-		return nil, fmt.Errorf("clone: %w", err)
-	}
-	if !head.IsZero() {
-		if err := repo.Storer.SetReference(plumbing.NewHashReference(branchRef, head)); err != nil {
-			return nil, err
-		}
-	}
-	return git.Open(st, osfs.New(g.dir))
+	return repo, nil
 }
 
-// compact replaces the local object store with a fresh depth-1 clone once enough
-// commits have piled up. Old loose objects and fetched packs are never needed
-// again, and without this they would grow until the emptyDir limit evicts the pod.
-// On any failure the current store is kept.
+// compact replaces the local object store with a sparse copy of itself (see
+// sparseStore) once enough commits have piled up: the packs fetched since,
+// and the loose objects of earlier commits, are never needed again, and
+// without this they would grow until the emptyDir limit evicts the pod. It
+// reads only this cluster's directory and costs no network. On any failure
+// the current store is kept.
 func (g *gitStore) compact(ctx context.Context) {
 	g.sinceCompact++
 	if g.sinceCompact < g.compactEvery {
 		return
 	}
 	g.sinceCompact = 0
-	const fresh, old = gitCompactDir, gitOldDir
-	if err := os.RemoveAll(filepath.Join(g.dir, fresh)); err != nil {
+	if err := os.RemoveAll(filepath.Join(g.dir, gitCompactDir)); err != nil {
 		slog.Warn("git compaction skipped", "err", err)
 		return
 	}
-	if _, err := g.cloneInto(ctx, fresh); err != nil {
-		os.RemoveAll(filepath.Join(g.dir, fresh))
+	if err := g.sparseStore(g.repo, gitCompactDir); err != nil {
+		os.RemoveAll(filepath.Join(g.dir, gitCompactDir))
 		slog.Warn("git compaction skipped", "err", err)
 		return
 	}
-	os.RemoveAll(filepath.Join(g.dir, old))
-	if err := os.Rename(filepath.Join(g.dir, ".git"), filepath.Join(g.dir, old)); err != nil {
-		os.RemoveAll(filepath.Join(g.dir, fresh))
+	if err := g.swapIn(gitCompactDir); err != nil {
 		slog.Warn("git compaction skipped", "err", err)
 		return
 	}
-	if err := os.Rename(filepath.Join(g.dir, fresh), filepath.Join(g.dir, ".git")); err != nil {
-		os.Rename(filepath.Join(g.dir, old), filepath.Join(g.dir, ".git"))
-		slog.Warn("git compaction skipped", "err", err)
-		return
+	slog.Info("local git store compacted")
+}
+
+// swapIn makes the store at <dir>/<gitDir> the local store, keeping the
+// current one if anything fails.
+func (g *gitStore) swapIn(gitDir string) error {
+	fresh, cur, old := filepath.Join(g.dir, gitDir), filepath.Join(g.dir, ".git"), filepath.Join(g.dir, gitOldDir)
+	os.RemoveAll(old)
+	if err := os.Rename(cur, old); err != nil {
+		os.RemoveAll(fresh)
+		return err
+	}
+	if err := os.Rename(fresh, cur); err != nil {
+		os.Rename(old, cur)
+		os.RemoveAll(fresh)
+		return err
 	}
 	repo, err := git.Open(g.storage(".git"), osfs.New(g.dir))
 	if err != nil {
-		os.RemoveAll(filepath.Join(g.dir, ".git"))
-		os.Rename(filepath.Join(g.dir, old), filepath.Join(g.dir, ".git"))
-		slog.Warn("git compaction rolled back", "err", err)
-		return
+		os.RemoveAll(cur)
+		os.Rename(old, cur)
+		return fmt.Errorf("rolled back: %w", err)
 	}
 	g.repo = repo
-	os.RemoveAll(filepath.Join(g.dir, old))
-	g.drops.later(nil, []string{filepath.Join(g.dir, ".git")})
-	slog.Info("local git store compacted")
+	g.written = g.written[:0]
+	os.RemoveAll(old)
+	g.drops.later(nil, []string{cur})
+	return nil
+}
+
+// sparseStore writes a new object store at <dir>/<gitDir> holding, for the
+// local branch head and the last known remote head, only what pickle reads:
+// the commit, its root tree, and this cluster's directory. Other clusters'
+// directories stay referenced by hash in the root tree, the way a partial
+// clone references what it hasn't fetched. Both commits are recorded as
+// shallow, and the remote-tracking ref is kept so the next fetch only brings
+// what changed since.
+func (g *gitStore) sparseStore(src *git.Repository, gitDir string) error {
+	st := g.storage(gitDir)
+	if _, err := g.initStore(st); err != nil {
+		return err
+	}
+	var refs []*plumbing.Reference
+	var commits []plumbing.Hash
+	for _, name := range []plumbing.ReferenceName{plumbing.NewBranchReferenceName(g.branch), plumbing.NewRemoteReferenceName("origin", g.branch)} {
+		ref, err := src.Reference(name, true)
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		refs = append(refs, plumbing.NewHashReference(name, ref.Hash()))
+		if !slices.Contains(commits, ref.Hash()) {
+			commits = append(commits, ref.Hash())
+		}
+	}
+	if err := g.copySparse(src, st, commits); err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if err := st.SetReference(r); err != nil {
+			return err
+		}
+	}
+	return st.SetShallow(commits)
+}
+
+// copySparse copies into st, for each of commits, the commit, its root tree
+// and this cluster's directory.
+func (g *gitStore) copySparse(src *git.Repository, st *filesystem.Storage, commits []plumbing.Hash) error {
+	seen := map[plumbing.Hash]bool{}
+	var keep []plumbing.Hash
+	add := func(h plumbing.Hash) bool {
+		if h.IsZero() || seen[h] {
+			return false
+		}
+		seen[h] = true
+		keep = append(keep, h)
+		return true
+	}
+	var addTree func(h plumbing.Hash) error
+	addTree = func(h plumbing.Hash) error {
+		if !add(h) {
+			return nil
+		}
+		t, err := object.GetTree(src.Storer, h)
+		if err != nil {
+			return err
+		}
+		for _, e := range t.Entries {
+			switch {
+			case e.Mode == filemode.Dir:
+				if err := addTree(e.Hash); err != nil {
+					return err
+				}
+			case e.Mode.IsFile():
+				add(e.Hash)
+			}
+		}
+		return nil
+	}
+	for _, h := range commits {
+		c, err := object.GetCommit(src.Storer, h)
+		if err != nil {
+			return err
+		}
+		add(h)
+		add(c.TreeHash)
+		root, err := object.GetTree(src.Storer, c.TreeHash)
+		if err != nil {
+			return err
+		}
+		if e, err := root.FindEntry(g.cluster); err == nil && e.Mode == filemode.Dir {
+			if err := addTree(e.Hash); err != nil {
+				return err
+			}
+		}
+	}
+	return writePack(st, keep, func(h plumbing.Hash) (plumbing.ObjectType, []byte, error) {
+		o, err := src.Storer.EncodedObject(plumbing.AnyObject, h)
+		if err != nil {
+			return 0, nil, err
+		}
+		r, err := o.Reader()
+		if err != nil {
+			return 0, nil, err
+		}
+		defer r.Close()
+		b, err := io.ReadAll(r)
+		return o.Type(), b, err
+	})
 }
 
 func gitAuth(cfg *config) (transport.AuthMethod, error) {
@@ -275,41 +466,141 @@ func gitAuth(cfg *config) (transport.AuthMethod, error) {
 	}
 }
 
-func isEmptyRemote(err error) bool {
-	if errors.Is(err, transport.ErrEmptyRemoteRepository) || errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return true
-	}
-	var nm git.NoMatchingRefSpecError
-	if errors.As(err, &nm) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "couldn't find remote ref") || strings.Contains(s, "reference not found")
-}
-
-// fetch returns the remote branch head, or ZeroHash if the branch doesn't exist yet.
+// fetch brings the remote branch head into the local store and returns it,
+// or ZeroHash if the branch doesn't exist yet.
+//
+// The fetch is incremental: the server is told which commits are here and
+// sends only what was committed since. A depth-limited fetch can't do that:
+// without thin packs, which go-git doesn't take, the server sends the whole
+// tree of the new head again, every cluster's directory included, on every
+// fetch. If the server shares none of the local commits (the branch's history
+// was rewritten), the head is downloaded afresh instead (see resnapshot),
+// never the rewritten history.
 func (g *gitStore) fetch(ctx context.Context) (plumbing.Hash, error) {
-	return fetchHead(ctx, g.repo, g.branch, g.auth)
+	remote, haves, err := g.fetchKnown(ctx)
+	if err != nil || remote.IsZero() || haves {
+		return remote, err
+	}
+	return g.resnapshot(ctx)
 }
 
-// fetchHead fetches only the tip of the branch (depth 1).
-func fetchHead(ctx context.Context, repo *git.Repository, branch string, auth transport.AuthMethod) (plumbing.Hash, error) {
-	spec := gitconfig.RefSpec("+refs/heads/" + branch + ":refs/remotes/origin/" + branch)
-	err := repo.FetchContext(ctx, &git.FetchOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{spec}, Auth: auth, Depth: 1, Force: true})
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		if isEmptyRemote(err) {
-			return plumbing.ZeroHash, nil
-		}
-		return plumbing.ZeroHash, err
+// fetchKnown fetches the remote head on top of the local commits the server
+// also has. haves is false when it shares none of them: nothing was fetched.
+func (g *gitStore) fetchKnown(ctx context.Context) (remote plumbing.Hash, haves bool, err error) {
+	sess, ar, err := g.uploadSession(ctx)
+	if err != nil || ar == nil {
+		return plumbing.ZeroHash, false, err
 	}
-	ref, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+	defer sess.Close()
+	refs, err := ar.AllReferences()
+	if err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	ref, err := refs.Reference(plumbing.NewBranchReferenceName(g.branch))
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return plumbing.ZeroHash, nil
+		return plumbing.ZeroHash, false, nil
 	}
 	if err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	remote = ref.Hash()
+	if g.repo.Storer.HasEncodedObject(remote) == nil {
+		return remote, true, g.trackRemote(remote)
+	}
+	var known []plumbing.Hash
+	for _, name := range []plumbing.ReferenceName{plumbing.NewRemoteReferenceName("origin", g.branch), plumbing.NewBranchReferenceName(g.branch)} {
+		if r, err := g.repo.Reference(name, true); err == nil && !slices.Contains(known, r.Hash()) && g.repo.Storer.HasEncodedObject(r.Hash()) == nil {
+			known = append(known, r.Hash())
+		}
+	}
+	if len(known) == 0 {
+		return remote, false, nil
+	}
+	req := packp.NewUploadPackRequestFromCapabilities(ar.Capabilities)
+	req.Wants = []plumbing.Hash{remote}
+	req.Haves = known
+	if ar.Capabilities.Supports(capability.NoProgress) {
+		_ = req.Capabilities.Set(capability.NoProgress)
+	}
+	resp, err := sess.UploadPack(ctx, req)
+	if err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	defer resp.Close()
+	if len(resp.ACKs) == 0 {
+		slog.Warn("the remote branch shares no commit with the local clone (was its history rewritten?); downloading its head afresh")
+		return remote, false, nil
+	}
+	if err := packfile.UpdateObjectStorage(g.repo.Storer, demux(req.Capabilities, resp)); err != nil {
+		return plumbing.ZeroHash, false, err
+	}
+	if g.repo.Storer.HasEncodedObject(remote) != nil {
+		return plumbing.ZeroHash, false, fmt.Errorf("fetch: %s not received", remote)
+	}
+	return remote, true, g.trackRemote(remote)
+}
+
+// uploadSession opens a fetch session; nil AdvRefs for an empty remote.
+func (g *gitStore) uploadSession(ctx context.Context) (transport.UploadPackSession, *packp.AdvRefs, error) {
+	ep, err := transport.NewEndpoint(g.url)
+	if err != nil {
+		return nil, nil, err
+	}
+	cl, err := gitclient.NewClient(ep)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess, err := cl.NewUploadPackSession(ep, g.auth)
+	if err != nil {
+		return nil, nil, err
+	}
+	ar, err := sess.AdvertisedReferencesContext(ctx)
+	if err != nil {
+		sess.Close()
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	return sess, ar, nil
+}
+
+// resnapshot replaces the local store with a sparse download of the remote
+// head (see downloadSnapshot), keeping the local branch head if it differs,
+// so a commit waiting to be pushed can still be rebased.
+func (g *gitStore) resnapshot(ctx context.Context) (plumbing.Hash, error) {
+	if err := os.RemoveAll(filepath.Join(g.dir, gitCompactDir)); err != nil {
 		return plumbing.ZeroHash, err
 	}
-	return ref.Hash(), nil
+	st := g.storage(gitCompactDir)
+	fail := func(err error) (plumbing.Hash, error) {
+		os.RemoveAll(filepath.Join(g.dir, gitCompactDir))
+		return plumbing.ZeroHash, err
+	}
+	if _, err := g.initStore(st); err != nil {
+		return fail(err)
+	}
+	head, err := g.downloadSnapshot(ctx, st, filepath.Join(g.dir, gitFullDir))
+	if err != nil {
+		return fail(err)
+	}
+	branch := plumbing.NewBranchReferenceName(g.branch)
+	if ref, err := g.repo.Reference(branch, true); err == nil && ref.Hash() != head {
+		if err := g.copySparse(g.repo, st, []plumbing.Hash{ref.Hash()}); err != nil {
+			return fail(err)
+		}
+		if err := st.SetReference(plumbing.NewHashReference(branch, ref.Hash())); err != nil {
+			return fail(err)
+		}
+		if err := st.SetShallow([]plumbing.Hash{head, ref.Hash()}); err != nil {
+			return fail(err)
+		}
+	}
+	if err := g.swapIn(gitCompactDir); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	g.sinceCompact = 0
+	return head, nil
 }
 
 // commit builds a commit on top of head (ZeroHash: the first commit) in which
@@ -581,14 +872,149 @@ func pushPause(attempt int) time.Duration {
 	return d/2 + rand.N(d/2)
 }
 
+// errRemoteMoved: the remote branch is no longer the parent of the local head.
+var errRemoteMoved = errors.New("remote branch moved")
+
+// pushOnce sends the local head if the remote branch is still its parent.
+// The pack holds only the objects along the paths the commit changed (see
+// newObjects). go-git's own push would instead walk the entire tree of the
+// remote head, and of every shallow commit, to find what the server already
+// has: every object of every cluster on the branch, read and held in memory
+// on each push.
 func (g *gitStore) pushOnce(ctx context.Context) error {
-	g.packPlain()
-	spec := gitconfig.RefSpec("refs/heads/" + g.branch + ":refs/heads/" + g.branch)
-	err := g.repo.PushContext(ctx, &git.PushOptions{RemoteName: "origin", RefSpecs: []gitconfig.RefSpec{spec}, Auth: g.auth})
-	if errors.Is(err, git.NoErrAlreadyUpToDate) {
+	refName := plumbing.NewBranchReferenceName(g.branch)
+	ref, err := g.repo.Reference(refName, true)
+	if err != nil {
+		return err
+	}
+	local, err := object.GetCommit(g.repo.Storer, ref.Hash())
+	if err != nil {
+		return err
+	}
+	var parent plumbing.Hash
+	if len(local.ParentHashes) > 0 {
+		parent = local.ParentHashes[0]
+	}
+	ep, err := transport.NewEndpoint(g.url)
+	if err != nil {
+		return err
+	}
+	cl, err := gitclient.NewClient(ep)
+	if err != nil {
+		return err
+	}
+	sess, err := cl.NewReceivePackSession(ep, g.auth)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	ar, err := sess.AdvertisedReferencesContext(ctx)
+	if err != nil {
+		return err
+	}
+	var remote plumbing.Hash
+	if refs, err := ar.AllReferences(); err != nil {
+		return err
+	} else if r, err := refs.Reference(refName); err == nil {
+		remote = r.Hash()
+	}
+	switch {
+	case remote == local.Hash:
+		return g.trackRemote(local.Hash)
+	case remote != parent:
+		return errRemoteMoved
+	}
+	hashes, err := g.newObjects(local, parent)
+	if err != nil {
+		return err
+	}
+	req := packp.NewReferenceUpdateRequestFromCapabilities(ar.Capabilities)
+	req.Commands = []*packp.Command{{Name: refName, Old: remote, New: local.Hash}}
+	rd, wr := io.Pipe()
+	req.Packfile = rd
+	done := make(chan error, 1)
+	go func() {
+		_, err := packfile.NewEncoder(wr, g.repo.Storer, !ar.Capabilities.Supports(capability.OFSDelta)).Encode(hashes, 0)
+		if err != nil {
+			done <- wr.CloseWithError(err)
+			return
+		}
+		done <- wr.Close()
+	}()
+	rs, err := sess.ReceivePack(ctx, req)
+	if err != nil {
+		rd.Close()
+		<-done
+		return err
+	}
+	if err := <-done; err != nil {
+		return err
+	}
+	if rs != nil {
+		if err := rs.Error(); err != nil {
+			return err
+		}
+	}
+	return g.trackRemote(local.Hash)
+}
+
+// trackRemote records h as the remote branch head.
+func (g *gitStore) trackRemote(h plumbing.Hash) error {
+	return g.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName("origin", g.branch), h))
+}
+
+// newObjects lists the objects of commit c the server lacks when it has
+// commit parent: c, and every tree and blob along the paths where c's tree
+// differs from parent's. Unchanged directories are skipped by hash, so the
+// cost follows the size of the change, not of the repo.
+func (g *gitStore) newObjects(c *object.Commit, parent plumbing.Hash) ([]plumbing.Hash, error) {
+	out := []plumbing.Hash{c.Hash}
+	seen := map[plumbing.Hash]bool{c.Hash: true}
+	base, err := g.rootTree(parent)
+	if err != nil {
+		return nil, err
+	}
+	var walk func(h, old plumbing.Hash) error
+	walk = func(h, old plumbing.Hash) error {
+		if h == old || seen[h] {
+			return nil
+		}
+		seen[h] = true
+		out = append(out, h)
+		was, err := g.treeEntries(old)
+		if err != nil {
+			return err
+		}
+		t, err := object.GetTree(g.repo.Storer, h)
+		if err != nil {
+			return err
+		}
+		for _, e := range t.Entries {
+			o, existed := was[e.Name]
+			if existed && o.Hash == e.Hash {
+				continue
+			}
+			switch {
+			case e.Mode == filemode.Dir:
+				var sub plumbing.Hash
+				if existed && o.Mode == filemode.Dir {
+					sub = o.Hash
+				}
+				if err := walk(e.Hash, sub); err != nil {
+					return err
+				}
+			case e.Mode == filemode.Submodule:
+			case !seen[e.Hash]:
+				seen[e.Hash] = true
+				out = append(out, e.Hash)
+			}
+		}
 		return nil
 	}
-	return err
+	if err := walk(c.TreeHash, base); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // rebase fetches the remote head and, if it is no longer the parent of the local
@@ -693,29 +1119,6 @@ func (g *gitStore) claimIn(dir object.TreeEntry) (string, error) {
 		return "", err
 	}
 	return parseClaim(data), nil
-}
-
-// packPlain makes pushes send objects without searching for deltas
-// (pack.window = 0). The search loads every pushed object, and the trees of
-// every directory a commit touches, into memory to compare them with each
-// other: most of a push's memory and CPU, to save some bytes of small YAML
-// files on the way to a server that repacks them anyway. Best effort.
-func (g *gitStore) packPlain() {
-	if g.repo == nil || g.packedPlain == g.repo {
-		return
-	}
-	cfg, err := g.repo.Config()
-	if err != nil {
-		return
-	}
-	if cfg.Pack.Window != 0 {
-		cfg.Pack.Window = 0
-		if err := g.repo.SetConfig(cfg); err != nil {
-			slog.Warn("can't turn off delta search for pushes", "err", err)
-			return
-		}
-	}
-	g.packedPlain = g.repo
 }
 
 // dropCaches hands back the page cache of what a pushed commit wrote: the

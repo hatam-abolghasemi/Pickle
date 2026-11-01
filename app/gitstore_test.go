@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	git "github.com/go-git/go-git/v5"
+	gitcfg "github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 func writeFile(p, content string) error {
@@ -29,7 +34,7 @@ func newRemote(t *testing.T) string {
 
 func storeFor(t *testing.T, remote, dir string) *gitStore {
 	t.Helper()
-	g, err := openGitStore(&config{RepoDir: dir, GitURL: remote, GitBranch: "master", AuthorName: "p", AuthorEmail: "p@p"})
+	g, err := openGitStore(&config{RepoDir: dir, GitURL: remote, GitBranch: "master", Cluster: "stg", AuthorName: "p", AuthorEmail: "p@p"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,5 +227,152 @@ func TestGitStoreFirstCommitOnEmptyRemote(t *testing.T) {
 	}
 	if files := remoteFiles(t, remote); files["stg/a.yaml"] != "a\n" {
 		t.Fatalf("got %v", files)
+	}
+}
+
+func TestGitStoreKeepsOnlyItsOwnCluster(t *testing.T) {
+	remote := newRemote(t)
+	pushFile(t, remote, "prod/ns/p.yaml", "p\n", "prod")
+	pushFile(t, remote, "stg/ns/s.yaml", "s\n", "stg")
+	g := clusterStore(t, remote, "stg")
+	if b, _ := os.ReadFile(filepath.Join(g.dir, "stg", "ns", "s.yaml")); string(b) != "s\n" {
+		t.Fatal("own cluster's files must be checked out")
+	}
+	if _, err := os.Stat(filepath.Join(g.dir, "prod")); err == nil {
+		t.Fatal("other clusters' files must not be written out")
+	}
+	head, err := g.fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := g.readFile(head, "stg/ns/s.yaml"); err != nil || !ok {
+		t.Fatalf("own cluster must be readable from the store: %v %v", ok, err)
+	}
+	if _, ok, _ := g.readFile(head, "prod/ns/p.yaml"); ok {
+		t.Fatal("other clusters' objects must not be stored locally")
+	}
+	stage(t, g, map[string]string{"stg/ns/s2.yaml": "s2\n"})
+	if _, err := g.push(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if files := remoteFiles(t, remote); files["prod/ns/p.yaml"] != "p\n" || files["stg/ns/s2.yaml"] != "s2\n" || files["stg/ns/s.yaml"] != "s\n" {
+		t.Fatalf("push must keep every cluster's files, remote has %v", keys(files))
+	}
+}
+
+func TestGitStoreFetchIsIncremental(t *testing.T) {
+	remote := newRemote(t)
+	big := strings.Repeat("y", 32<<10)
+	for i := 0; i < 20; i++ {
+		pushFile(t, remote, fmt.Sprintf("prod/f%d.yaml", i), big+fmt.Sprint(i), "prod")
+	}
+	g := clusterStore(t, remote, "stg")
+	ctx := context.Background()
+	if _, err := g.fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := dirSize(t, filepath.Join(g.dir, ".git"))
+	pushFile(t, remote, "prod/f0.yaml", "small\n", "prod meanwhile")
+	if _, err := g.fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grown := dirSize(t, filepath.Join(g.dir, ".git")) - before; grown > 16<<10 {
+		t.Fatalf("a fetch after a one-line change elsewhere downloaded %d bytes: the whole tree again", grown)
+	}
+}
+
+func TestNewObjectsFollowOnlyChangedPaths(t *testing.T) {
+	remote := newRemote(t)
+	for i := 0; i < 5; i++ {
+		pushFile(t, remote, fmt.Sprintf("stg/ns%d/a.yaml", i), fmt.Sprint(i), "seed")
+	}
+	g := clusterStore(t, remote, "stg")
+	stage(t, g, map[string]string{"stg/ns3/a.yaml": "changed"})
+	ref, err := g.repo.Reference(plumbing.NewBranchReferenceName("master"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := object.GetCommit(g.repo.Storer, ref.Hash())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs, err := g.newObjects(c, c.ParentHashes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 5 { // commit, root, stg, stg/ns3, the blob
+		t.Fatalf("want 5 objects for a one-file change, got %d", len(hs))
+	}
+}
+
+// rewriteRemote replaces the remote branch with a new history of one commit
+// holding files.
+func rewriteRemote(t *testing.T, remote string, files map[string]string) {
+	t.Helper()
+	dir := t.TempDir()
+	r, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateRemote(&gitcfg.RemoteConfig{Name: "origin", URLs: []string{remote}}); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := r.Worktree()
+	for p, c := range files {
+		if err := writeFile(filepath.Join(dir, p), c); err != nil {
+			t.Fatal(err)
+		}
+		w.Add(p)
+	}
+	sig := &object.Signature{Name: "t", Email: "t@t", When: time.Now()}
+	if _, err := w.Commit("rewritten", &git.CommitOptions{Author: sig}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Push(&git.PushOptions{RefSpecs: []gitcfg.RefSpec{"+refs/heads/master:refs/heads/master"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGitStoreFetchAfterHistoryRewrite(t *testing.T) {
+	remote := newRemote(t)
+	pushFile(t, remote, "stg/a.yaml", "a\n", "seed")
+	g := clusterStore(t, remote, "stg")
+	ctx := context.Background()
+	stage(t, g, map[string]string{"stg/b.yaml": "b\n"})
+	if _, err := g.push(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rewriteRemote(t, remote, map[string]string{"stg/a.yaml": "a\n", "stg/b.yaml": "b\n", "prod/p.yaml": "p\n"})
+	head, err := g.fetch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, ok, err := g.readFile(head, "stg/b.yaml"); err != nil || !ok || string(b) != "b\n" {
+		t.Fatalf("the rewritten head must be readable: %q %v %v", b, ok, err)
+	}
+	stage(t, g, map[string]string{"stg/c.yaml": "c\n"})
+	if _, err := g.push(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if files := remoteFiles(t, remote); len(files) != 4 || files["stg/c.yaml"] != "c\n" || files["prod/p.yaml"] != "p\n" {
+		t.Fatalf("remote has %v", files)
+	}
+}
+
+func TestGitStoreRebaseAfterHistoryRewrite(t *testing.T) {
+	remote := newRemote(t)
+	pushFile(t, remote, "stg/a.yaml", "a\n", "seed")
+	g := clusterStore(t, remote, "stg")
+	stage(t, g, map[string]string{"stg/b.yaml": "b\n"})
+	rewriteRemote(t, remote, map[string]string{"stg/a.yaml": "a\n", "prod/p.yaml": "p\n"})
+	n, err := g.push(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 conflict, got %d", n)
+	}
+	if files := remoteFiles(t, remote); len(files) != 3 || files["stg/b.yaml"] != "b\n" || files["prod/p.yaml"] != "p\n" {
+		t.Fatalf("remote has %v", files)
 	}
 }
