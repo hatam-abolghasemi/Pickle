@@ -621,7 +621,7 @@ func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool)
 	}
 	cont := ""
 	for {
-		l, err := ri.List(ctx, metav1.ListOptions{Limit: e.cfg.PageSize, Continue: cont})
+		l, err := ri.List(ctx, metav1.ListOptions{Limit: e.pageSize(r), Continue: cont})
 		if err != nil {
 			if cont != "" && apierrors.IsResourceExpired(err) && live {
 				cont, seen = "", map[string]bool{} // continue token expired: start this list over
@@ -640,6 +640,23 @@ func (e *engine) listAll(ctx context.Context, r *resource, ns string, live bool)
 			return "", nil, ctx.Err()
 		}
 	}
+}
+
+// bulkyTypes hold objects commonly hundreds of KiB each (a CRD carries its
+// whole OpenAPI schema; some exceed 1 MiB), so a page of them is listed
+// with at most bulkyPageSize objects: a page is decoded whole into memory,
+// and 50 CRDs can take well over 100 MiB of heap.
+var bulkyTypes = map[string]bool{
+	"apiextensions.k8s.io/customresourcedefinitions": true,
+}
+
+const bulkyPageSize = 5
+
+func (e *engine) pageSize(r *resource) int64 {
+	if bulkyTypes[r.id()] {
+		return min(e.cfg.PageSize, bulkyPageSize)
+	}
+	return e.cfg.PageSize
 }
 
 // listAllMeta is listAll for a metadata-only type.
