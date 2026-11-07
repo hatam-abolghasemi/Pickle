@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -146,6 +145,7 @@ func normalize(u *unstructured.Unstructured) *unstructured.Unstructured {
 		// and re-applying it on restore would start a sync nobody asked for.
 		delete(out, "operation")
 	}
+	dropDefaults(out)
 	return n
 }
 
@@ -209,9 +209,24 @@ func maskValue(v any, key []byte) string {
 	if len(key) == 0 || !ok {
 		return secretMask
 	}
+	return secretMask + ":" + fingerprint(s, key)
+}
+
+func fingerprint(s string, key []byte) string {
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(s))
-	return secretMask + ":" + hex.EncodeToString(mac.Sum(nil))[:fingerprintLen]
+	return hex.EncodeToString(mac.Sum(nil))[:fingerprintLen]
+}
+
+// writtenSecretData reads the data of a Secret file as pickle last wrote it.
+func writtenSecretData(content []byte) map[string]string {
+	var s struct {
+		Data map[string]string `json:"data"`
+	}
+	if yaml.Unmarshal(content, &s) != nil {
+		return nil
+	}
+	return s.Data
 }
 
 const secretsID = "core/secrets"
@@ -240,19 +255,10 @@ func stripHeader(content []byte) []byte {
 	return content
 }
 
-// render produces the exact bytes written to the repo.
-func render(h header, n *unstructured.Unstructured) ([]byte, error) {
-	j, err := json.Marshal(n.Object)
-	if err != nil {
-		return nil, err
-	}
-	return renderJSON(h, j)
-}
-
-// renderJSON is render from n.Object's JSON (sigs.k8s.io/yaml.Marshal is
-// json.Marshal then JSONToYAML: the same bytes).
+// renderJSON produces the exact bytes written to the repo from an object's
+// JSON: the header, then the object in hand-written order (see toYAML).
 func renderJSON(h header, j []byte) ([]byte, error) {
-	body, err := yaml.JSONToYAML(j)
+	body, err := toYAML(j)
 	if err != nil {
 		return nil, err
 	}

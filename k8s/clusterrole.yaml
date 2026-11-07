@@ -3,6 +3,11 @@ kind: ClusterRole
 metadata:
   name: pickle-read
 rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: [get, list, watch]
+  - apiGroups:
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - get
+      - list
+      - watch
