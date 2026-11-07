@@ -13,7 +13,7 @@
 
 **Velero** is the standard Kubernetes backup tool: scheduled snapshots of objects and volume data in object storage, with one-command restores. Compared with pickle, it keeps point-in-time archives instead of per-change history, needs write access to restore, stores Secret values, and can't show who hand-edited what. Use Velero for data and disaster recovery, pickle for configuration history. **Kasten K10** is Veeam's commercial counterpart, and the same comparison applies.
 
-**GitOps Reverser** is the closest relative: an operator that writes YAML to Git on every change. It's configured through CRDs and encrypts Secrets with SOPS, so values can be decrypted. Pickle has no CRDs and never stores values at all; it adds a rate-limited backfill, `last-manager` headers, a Secrets checklist and branch sharing.
+**GitOps Reverser** is the closest relative: an operator that writes YAML to Git on every change. It's configured through CRDs and encrypts Secrets with SOPS, so values can be decrypted. Pickle has no CRDs and stores no values unless you turn on encryption, which decrypts with `pickle decrypt` or plain OpenSSL. It adds a rate-limited backfill, `last-manager` headers, a Secrets checklist and branch sharing.
 
 **Katafygio** has the same core idea, with releases dating from around 2018. **kube-backup** is a CronJob script, unmaintained for years. **kube-dump** is an on-demand exporter, good for one-off migrations. **kubewatch** notifies about changes but keeps no copy.
 
