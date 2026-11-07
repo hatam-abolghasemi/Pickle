@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: agentic-vendor-ai-prod
+  annotations:
+    deployed-by: Pooria Anvari
+spec:
+  replicas: 2
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      component: api
+  template:
+    metadata:
+      labels:
+        component: api
+    spec:
+      imagePullSecrets:
+        - name: registry-secret
+      containers:
+        - name: api
+          image: registry.snappfood.ir/backend/dotnet/services/agentic-vendor-ai-support/prod:v112
+          ports:
+            - name: http
+              containerPort: 80
+          envFrom:
+            - configMapRef:
+                name: env-cm
+            - secretRef:
+                name: env-secret
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health/startup
+              port: http
+            timeoutSeconds: 5

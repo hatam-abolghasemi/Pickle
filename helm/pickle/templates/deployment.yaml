@@ -31,7 +31,6 @@ spec:
       serviceAccountName: {{ include "pickle.serviceAccountName" . }}
       automountServiceAccountToken: true
       enableServiceLinks: false
-      terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -76,7 +75,8 @@ spec:
             readOnlyRootFilesystem: true
             runAsNonRoot: true
             capabilities:
-              drop: [ALL]
+              drop:
+                - ALL
           volumeMounts:
             - name: data
               mountPath: /data

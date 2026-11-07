@@ -62,17 +62,24 @@ func TestReadHeaderMatchesTypedManagedFields(t *testing.T) {
 	}
 }
 
-func TestRenderJSONMatchesYAMLMarshal(t *testing.T) {
+// TestRenderRoundTrips: whatever the order, the YAML reads back as exactly
+// the object, tricky strings and numbers included.
+func TestRenderRoundTrips(t *testing.T) {
 	n := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": map[string]any{"name": "a", "namespace": "b", "labels": map[string]any{"z": "1", "a": "2"}},
-		"data":     map[string]any{"k": "multi\nline", "n": "0123", "t": "true"}, "spec": map[string]any{"i": int64(3), "f": 1.5, "l": []any{"x", nil}}}}
-	h := header{manager: "kubectl", operation: "Apply", changed: "2026-10-01T10:00:00Z"}
-	got, err := render(h, n)
+		"data":     map[string]any{"k": "multi\nline\n", "n": "0123", "t": "true", "y": "yes", "o": "0x1F", "e": "", "s": "*star", "c": "a: b", "h": "#x", "sp": " lead", "u": "سلام", "on": "on", "Off": "Off", "Y": "Y", "b60": "1:30", "b60f": "190:20:30.15", "exp": "1e3", "nul": "null", "tilde": "~", "inf": ".inf", "oct": "0o17", "plus": "+1", "dash": "-", "colon": "a:b", "tab": "a\tb", "trail": "x ", "quote": "'q'", "dq": "\"x\"", "crlf": "a\r\nb", "bad": "\xff"},
+		"spec":     map[string]any{"i": int64(3), "big": int64(1) << 53, "f": 1.5, "neg": int64(-7), "l": []any{"x", int64(1), true}, "m": map[string]any{}, "z": []any{}}}}
+	got, err := render(header{manager: "kubectl"}, n)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := yaml.Marshal(n.Object)
-	if want := append([]byte(h.render()), body...); !bytes.Equal(got, want) {
-		t.Fatalf("render changed:\n%s\nwant:\n%s", got, want)
+	var back map[string]any
+	if err := yaml.Unmarshal(got, &back); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := yaml.Marshal(n.Object)
+	again, _ := yaml.Marshal(back)
+	if !bytes.Equal(want, again) {
+		t.Fatalf("round trip changed the object:\n%s\nfrom:\n%s", again, want)
 	}
 }

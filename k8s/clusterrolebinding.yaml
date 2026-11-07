@@ -7,6 +7,6 @@ roleRef:
   kind: ClusterRole
   name: pickle-read
 subjects:
-- kind: ServiceAccount
-  name: pickle
-  namespace: pickle
+  - kind: ServiceAccount
+    name: pickle
+    namespace: pickle

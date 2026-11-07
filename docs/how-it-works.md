@@ -36,6 +36,38 @@ Kept: `apiVersion`, `kind`, `name`, `namespace`, `labels`, `annotations`, and th
 | Service `clusterIP(s)`, except `None` | allocated per cluster |
 | PVC `volumeName`, PV `claimRef.uid` / `resourceVersion` | bound per cluster |
 
+Fields the API server filled in with its own default are removed too, but only where the value is exactly that default, so applying the file gives back the same object: `dnsPolicy: ClusterFirst`, `restartPolicy: Always`, `terminationMessagePath`, probe thresholds, `protocol: TCP`, a Service `targetPort` equal to its `port`, a Deployment's default rolling update, `imagePullPolicy` when it's what the image's tag implies, and so on. A value you set that differs from the default always stays.
+
+Files are written the way manifests are written by hand: `apiVersion`, `kind`, `metadata` (`name`, `namespace`, `labels`, `annotations`), then the body; `name` first in every list item; a container's `image` before its `ports`, `env` and probes; block style, with lists indented under their key. Maps of your own keys (labels, annotations, `data`, selectors) are alphabetical.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: payments
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      component: api
+  template:
+    metadata:
+      labels:
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: registry.example.com/payments/api:v112
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+```
+
 Output is deterministic. Unchanged bytes mean no write and no commit, so status updates are free.
 
 ## Header

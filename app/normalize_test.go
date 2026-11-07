@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -8,7 +9,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func obj(t *testing.T, y string) *unstructured.Unstructured {
+func obj(t testing.TB, y string) *unstructured.Unstructured {
 	t.Helper()
 	m := map[string]any{}
 	if err := yaml.Unmarshal([]byte(y), &m); err != nil {
@@ -177,4 +178,13 @@ func TestTransientArgoFieldsDropped(t *testing.T) {
 	if other.Object["operation"] != "keep" {
 		t.Error("operation of a non-Argo Application must stay")
 	}
+}
+
+// render is renderJSON from an object, as the engine does it.
+func render(h header, n *unstructured.Unstructured) ([]byte, error) {
+	j, err := json.Marshal(n.Object)
+	if err != nil {
+		return nil, err
+	}
+	return renderJSON(h, j)
 }
