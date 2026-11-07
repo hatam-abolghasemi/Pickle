@@ -4,6 +4,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-07
+
+### Added
+
+- Encrypted Secret values, opt-in, so Secrets can be restored from the repo alone. Put your certificate in the `pickle-git` Secret as `encryption-cert` (Helm: `secrets.encryptionCert`) and each value is written as `enc:<fingerprint>:<blob>`: CMS AuthEnvelopedData with AES-256-GCM and RSA-OAEP. Pickle only has the certificate, so it can never decrypt. Decrypting gives exactly the original value or an error, never wrong bytes. Needs `fingerprint-key`. Diffs stay per key, and an unchanged Secret costs no more CPU or memory than before. Turning it on or changing the certificate rewrites every Secret file once. See [docs/security.md](docs/security.md#encrypted-values).
+- `pickle decrypt -key pickle.key <file or dir>`: prints Secret files with their values decrypted, ready for `kubectl apply`. No OpenSSL, cluster or config needed; runs from the image. Prints nothing if any value fails. Plain OpenSSL 3 works too. See [docs/restore.md](docs/restore.md).
+- A Grafana dashboard, [`dashboards/pickle.json`](dashboards/pickle.json).
+- Metrics `pickle_build_info`, `pickle_start_time_seconds`, `pickle_secret_encryption_enabled`, `pickle_secret_values_encrypted_total` and `pickle_secret_encryption_failures_total`.
+
+### Changed
+
+- Files read like hand-written manifests: `apiVersion`, `kind`, `metadata`, then the body, `name` first in every list item, lists indented under their key, and no fields that only repeat the API server's defaults (`dnsPolicy: ClusterFirst`, probe thresholds, `protocol: TCP`...). A value that differs from the default always stays, so applying a file gives back the same object. Writing a file also costs about 25% less CPU and 40% less memory than before. After upgrading, every mirrored file is rewritten once, in one commit per cluster. See [docs/how-it-works.md](docs/how-it-works.md#normalization).
+- The plain manifests in `k8s/` use the same layout.
+
 ## [1.0.6] - 2026-11-01
 
 ### Changed
@@ -123,7 +137,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...v1.1.0
 [1.0.6]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.3...v1.0.4
