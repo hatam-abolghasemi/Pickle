@@ -15,7 +15,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// version is set at build time (-X main.version=...).
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "decrypt" {
+		os.Exit(runDecrypt(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	cfg, err := loadConfig()
@@ -49,6 +55,9 @@ func main() {
 	}
 
 	m := newMetrics(cfg.Cluster)
+	if cfg.Encrypter != nil {
+		m.secretEncryption.Store(1)
+	}
 	go serveMetrics(cfg.MetricsAddr, m)
 
 	store, err := openGitStore(cfg)
@@ -66,7 +75,7 @@ func main() {
 	if len(cfg.MetadataWatch) > 0 {
 		e.meta = meta
 	}
-	slog.Info("pickle starting", "cluster", cfg.Cluster, "branch", cfg.GitBranch, "secretFingerprints", len(cfg.FingerprintKey) > 0)
+	slog.Info("pickle starting", "version", version, "cluster", cfg.Cluster, "branch", cfg.GitBranch, "secretFingerprints", len(cfg.FingerprintKey) > 0, "secretEncryption", cfg.Encrypter != nil)
 	if err := e.run(ctx); err != nil {
 		fatal("run", err)
 	}

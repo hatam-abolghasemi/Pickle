@@ -29,6 +29,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_GIT_AUTHOR_NAME` | `pickle` | |
 | `PICKLE_GIT_AUTHOR_EMAIL` | `pickle@<cluster>.local` | |
 | `PICKLE_SECRET_FINGERPRINT_KEY_FILE` | `/etc/pickle/git/fingerprint-key` | Key for Secret value fingerprints; a missing file turns them off |
+| `PICKLE_SECRET_ENCRYPTION_CERT_FILE` | `/etc/pickle/git/encryption-cert` | Certificate to encrypt Secret values to; a missing file turns encryption off |
 | `PICKLE_REPO_DIR` | `/data/repo` | Local clone. Must be empty or a pickle clone; anything else is refused, never deleted |
 | `GOMEMLIMIT` | the memory limit | Set from `limits.memory` by the manifests, so the GC works harder before the container is OOM-killed |
 
@@ -74,6 +75,7 @@ Credentials never go in the ConfigMap. They're files from the `pickle-git` Secre
 | `ssh-privatekey` + `known_hosts` | SSH URLs. Host keys are always verified. |
 | `token` | HTTPS URLs. Without it, pickle connects anonymously. |
 | `fingerprint-key` | Optional. Secret values are written as `****:<fingerprint>` so a changed value shows up under its key; see [security](security.md#secrets). At least 32 characters. |
+| `encryption-cert` | Optional. Your certificate (RSA, 2048 bits or more); Secret values are written encrypted to it, see [security](security.md#encrypted-values). Needs `fingerprint-key`. |
 
 SSH setup is in the [README](../README.md#quick-start). For HTTPS:
 

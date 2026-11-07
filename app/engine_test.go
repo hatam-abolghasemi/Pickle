@@ -402,6 +402,86 @@ func TestSecretFingerprintChanges(t *testing.T) {
 	}
 }
 
+func TestSecretEncryption(t *testing.T) {
+	enc, keyFile := testEncrypter(t)
+	cfg := &config{Cluster: "stg", RepoDir: t.TempDir(), FingerprintKey: testFPKey, Encrypter: enc}
+	e, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backfill = false
+	sec := &resource{gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, kind: "Secret", namespaced: true, token: "secret"}
+	st := func(ts, pw string) *unstructured.Unstructured {
+		return obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments,
+		  managedFields: [{manager: kubectl, operation: Update, time: "`+ts+`"}]}, data: {PASSWORD: `+pw+`, USER: YWRtaW4=}}`)
+	}
+	p := e.handle(sec, st("2026-10-25T03:00:00Z", "eHh4"), false, true)
+	delete(e.dirty, p)
+	before, _ := os.ReadFile(e.abs(p))
+	data := writtenSecretData(before)
+	if strings.Contains(string(before), "eHh4") || strings.Contains(string(before), "YWRtaW4=") {
+		t.Fatalf("a value was written in plain:\n%s", before)
+	}
+	if !strings.HasPrefix(data["PASSWORD"], "enc:"+fingerprint("eHh4", enc.fpKey)+":") {
+		t.Fatalf("value must be enc:<fingerprint>:<blob>: %q", data["PASSWORD"])
+	}
+	if got := opensslDecrypt(t, keyFile, data["USER"]); got != "admin" {
+		t.Fatalf("USER decrypted to %q", got)
+	}
+
+	e.handle(sec, st("2026-10-25T04:00:00Z", "eHh4"), false, true)
+	if _, ok := e.dirty[p]; ok {
+		t.Error("a Secret whose values did not change was rewritten")
+	}
+	if n := e.m.secretsEncrypted.Load(); n != 2 {
+		t.Errorf("encrypted %d values, want 2: an unchanged Secret must not be encrypted again", n)
+	}
+	e.handle(sec, st("2026-10-25T05:00:00Z", "eXl5"), false, true)
+	if _, ok := e.dirty[p]; !ok {
+		t.Fatal("a Secret value change was not written")
+	}
+	after := writtenSecretData(mustRead(t, e.abs(p)))
+	if after["USER"] != data["USER"] {
+		t.Error("an unchanged key must keep its encrypted line")
+	}
+	if after["PASSWORD"] == data["PASSWORD"] || opensslDecrypt(t, keyFile, after["PASSWORD"]) != "yyy" {
+		t.Errorf("the changed key must be encrypted again: %q", after["PASSWORD"])
+	}
+
+	// After a restart pickle starts from the files on disk: unchanged values
+	// keep their blobs, so nothing is rewritten.
+	e2, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e2.loadExisting(); err != nil {
+		t.Fatal(err)
+	}
+	e2.backfill = false
+	e2.handle(sec, st("2026-10-25T05:00:00Z", "eXl5"), false, true)
+	if _, ok := e2.dirty[p]; ok {
+		t.Error("an unchanged Secret was rewritten after a restart")
+	}
+
+	// A new certificate re-encrypts every value, so none is left that only
+	// the old key can open.
+	var keyFile2 string
+	cfg.Encrypter, keyFile2 = testEncrypter(t)
+	e3, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e3.loadExisting(); err != nil {
+		t.Fatal(err)
+	}
+	e3.backfill = false
+	e3.handle(sec, st("2026-10-25T05:00:00Z", "eXl5"), false, true)
+	rotated := writtenSecretData(mustRead(t, e3.abs(p)))
+	if rotated["USER"] == after["USER"] || opensslDecrypt(t, keyFile2, rotated["USER"]) != "admin" {
+		t.Errorf("a new certificate must re-encrypt every value: %q", rotated["USER"])
+	}
+}
+
 func TestChangedAndBackIsNotCommitted(t *testing.T) {
 	remote := newRemote(t)
 	dir := t.TempDir()
@@ -456,5 +536,30 @@ func TestChangedAndBackIsNotCommitted(t *testing.T) {
 	}
 	if s := remoteFiles(t, remote)[p]; !strings.Contains(s, "05:30:00Z") || !strings.Contains(s, "project: platform") {
 		t.Errorf("real change not pushed:\n%s", s)
+	}
+}
+
+// BenchmarkHandleSecret is a resync of an unchanged Secret, the steady state.
+// Encrypted must cost about the same as masked: no file read, no encryption.
+func BenchmarkHandleSecret(b *testing.B) {
+	enc, _ := testEncrypter(b)
+	for name, enc := range map[string]*encrypter{"masked": nil, "encrypted": enc} {
+		b.Run(name, func(b *testing.B) {
+			cfg := &config{Cluster: "stg", RepoDir: b.TempDir(), FingerprintKey: testFPKey, Encrypter: enc}
+			e, err := newEngine(cfg, nil, testDisco, nil, newMetrics("stg"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			e.backfill = false
+			sec := &resource{gvr: schema.GroupVersionResource{Version: "v1", Resource: "secrets"}, kind: "Secret", namespaced: true, token: "secret"}
+			u := obj(b, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments,
+			  managedFields: [{manager: kubectl, operation: Update, time: "2026-10-25T03:00:00Z"}]},
+			  data: {PASSWORD: eHh4, USER: YWRtaW4=, CA: `+b64(strings.Repeat("x", 4096))+`}}`)
+			e.handle(sec, u, false, true)
+			b.ReportAllocs()
+			for b.Loop() {
+				e.handle(sec, u, false, true)
+			}
+		})
 	}
 }

@@ -31,6 +31,11 @@ secrets:
   # With git.existingSecret, put it in that Secret as fingerprint-key instead.
   # Keep it stable: a new key changes every fingerprint once.
   fingerprintKey: ""
+  # Certificate to encrypt Secret values to, so they can be restored from the
+  # repo with OpenSSL (docs/security.md#encrypted-values). Needs fingerprintKey.
+  #   --set-file secrets.encryptionCert=$HOME/.config/pickle/pickle.crt
+  # With git.existingSecret, put it in that Secret as encryption-cert instead.
+  encryptionCert: ""
 
 config:
   # Commit once changes have been quiet this long...

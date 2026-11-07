@@ -8,7 +8,7 @@
 
 ## Secrets
 
-Values are masked in memory, before rendering, so they never touch disk or Git. Masking fails closed: only `apiVersion`, `kind`, `metadata`, `type`, `immutable` and `data` are written, so a field pickle doesn't know about can never carry a value into Git.
+Values are masked in memory, before rendering, so they never touch disk or Git, unless you turn on [encrypted values](#encrypted-values). Masking fails closed: only `apiVersion`, `kind`, `metadata`, `type`, `immutable` and `data` are written, so a field pickle doesn't know about can never carry a value into Git.
 
 With a fingerprint key (`fingerprint-key` in the `pickle-git` Secret), each value becomes `****:` plus the first 12 hex digits of its HMAC-SHA256 under that key:
 
@@ -30,6 +30,9 @@ A changed value shows up as a diff line under its own key, so you see exactly wh
 
 ```bash
 sudo kubectl -n pickle patch secret pickle-git --type merge -p "{\"stringData\":{\"fingerprint-key\":\"$(openssl rand -hex 32)\"}}"
+```
+
+```bash
 sudo kubectl -n pickle rollout restart deploy/pickle
 ```
 
@@ -47,9 +50,104 @@ payments-db:
   - deployment/payments-api
 ```
 
+### Encrypted values
+
+Optional. For incident day: Secret values you can decrypt from the repo alone, on any machine, even when the cluster and pickle are gone. It's a shortcut for recovery, not a secret store; Vault, Sealed Secrets or whatever you use stays the source of truth.
+
+Each value is written as `enc:<fingerprint>:<blob>`:
+
+```yaml
+data:
+  DB_PASSWORD: enc:3f9a1c7e5b2d:MIIC1QYJKoZIhvcNAQkQARegggLEMIICwAIBADGCAl0w...
+  DB_USER: enc:a07c41d9e2f8:MIICtQYJKoZIhvcNAQkQARegggKkMIICoAIBADGCAl0w...
+```
+
+The blob is a standard CMS AuthEnvelopedData: AES-256-GCM encrypts the value, RSA-OAEP (SHA-256) encrypts that AES key to your certificate. GCM authenticates the value, so decrypting gives exactly the original bytes or fails with an error; a damaged or altered blob never decrypts to something wrong. Pickle gets only your certificate: it can encrypt, never decrypt. Diffs stay per key: an unchanged value keeps its line.
+
+Two ways to decrypt, both all-or-nothing (if one value fails, nothing is printed): `pickle decrypt`, which needs no OpenSSL and runs anywhere Docker or Go does, and plain OpenSSL 3. See [restore](restore.md).
+
+**1. Make sure pickle has a fingerprint key.** Encryption needs one; pickle refuses to start without it. This prints nothing if it's missing:
+
+```bash
+sudo kubectl -n pickle get secret pickle-git -o jsonpath='{.data.fingerprint-key}'
+```
+
+If it's missing, add it as [above](#secrets).
+
+**2. Create your key pair**, once, on your machine (OpenSSL 3). The certificate never expires, and pickle ignores its dates anyway.
+
+```bash
+mkdir -p ~/.config/pickle && chmod 700 ~/.config/pickle && cd "$(mktemp -d)"
+```
+
+```bash
+openssl genrsa -out ~/.config/pickle/pickle.key 4096 && chmod 600 ~/.config/pickle/pickle.key
+```
+
+```bash
+mkdir ca && touch ca/index.txt && echo 01 > ca/serial && printf '[ca]\ndefault_ca=d\n[d]\ndatabase=ca/index.txt\nnew_certs_dir=ca\nserial=ca/serial\ndefault_md=sha256\npolicy=p\n[p]\ncommonName=supplied\n' > ca.cnf
+```
+
+```bash
+openssl req -new -key ~/.config/pickle/pickle.key -subj "/CN=pickle" -out pickle.csr
+```
+
+```bash
+openssl ca -batch -config ca.cnf -selfsign -keyfile ~/.config/pickle/pickle.key -in pickle.csr -enddate 99991231235959Z -notext -out ~/.config/pickle/pickle.crt
+```
+
+Check that the key decrypts what the certificate encrypts; this prints `ok`:
+
+```bash
+echo -n ok | openssl cms -encrypt -aes-256-gcm -binary -outform DER -recip ~/.config/pickle/pickle.crt | openssl cms -decrypt -inform DER -inkey ~/.config/pickle/pickle.key
+```
+
+`pickle.key` is the only thing that decrypts your Secrets. It never goes to the cluster or the repo. Keep a backup somewhere safe (a password manager, a vault); without it the values can't be decrypted, by anyone. Losing it only loses this shortcut.
+
+**3. Give pickle the certificate** and restart it:
+
+```bash
+sudo kubectl -n pickle patch secret pickle-git -p "{\"data\":{\"encryption-cert\":\"$(base64 -w0 ~/.config/pickle/pickle.crt)\"}}"
+```
+
+```bash
+sudo kubectl -n pickle rollout restart deploy/pickle
+```
+
+With Helm, add `--set-file secrets.encryptionCert=$HOME/.config/pickle/pickle.crt` to your `helm upgrade` instead, or put `encryption-cert` in your `git.existingSecret`.
+
+**4. Check it's on.** The startup line says `secretEncryption=true`:
+
+```bash
+sudo kubectl -n pickle logs deploy/pickle | grep "pickle starting"
+```
+
+Every Secret file is rewritten once with `enc:` values on the next push.
+
+**5. Test a restore now**, not on incident day. Pull the repo and decrypt one Secret with your key, as in [restore](restore.md). If it prints the Secret with real values, you're set.
+
+**Turning it off:** remove `encryption-cert`, then restart. New values go back to `****:<fingerprint>`.
+
+```bash
+sudo kubectl -n pickle patch secret pickle-git --type json -p '[{"op":"remove","path":"/data/encryption-cert"}]'
+```
+
+```bash
+sudo kubectl -n pickle rollout restart deploy/pickle
+```
+
+**A new certificate** (steps 2 and 3 again) re-encrypts every value to it.
+
+Good to know:
+
+- A blob opens only with the key whose certificate it was encrypted to. After a new certificate, keep the old key as long as you may need the old commits; `pickle decrypt` says `wrong key` when you use the other one.
+- Git keeps every blob ever pushed. Whoever has the key and the repo can decrypt all of them; a new certificate or turning encryption off only changes new commits.
+- There is one certificate, so one key. Share `pickle.key` only with whoever should be able to restore Secrets.
+- A value that can't be encrypted is written as `****:<fingerprint>`, never in plain, and counted in `pickle_secret_encryption_failures_total`.
+
 ## The trade-off
 
-Pickle's ServiceAccount can read Secret values from the API, even though pickle never writes them anywhere. Anyone able to run code in the pod could use that. To narrow it:
+Pickle's ServiceAccount can read Secret values from the API, even though pickle never writes them anywhere unencrypted. Anyone able to run code in the pod could use that. To narrow it:
 
 - Allow only cluster admins to `exec` into or modify the `pickle` namespace.
 - Enable the chart's NetworkPolicy (`networkPolicy.enabled`), which limits the pod to the API server, your Git host and DNS.
