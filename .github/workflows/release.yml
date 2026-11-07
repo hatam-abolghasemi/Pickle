@@ -75,6 +75,7 @@ jobs:
           context: app
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: VERSION=${{ needs.version.outputs.version }}
           provenance: mode=max
           sbom: true
           tags: |
