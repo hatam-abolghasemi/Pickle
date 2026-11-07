@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime"
 	rtmetrics "runtime/metrics"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 // metrics is a tiny Prometheus text exporter; no client library needed.
 type metrics struct {
 	cluster string
+	started int64
 
 	backfillTypesTotal atomic.Int64
 	backfillTypesDone  atomic.Int64
@@ -31,15 +33,23 @@ type metrics struct {
 
 	resourcesWatched   atomic.Int64
 	resourcesForbidden atomic.Int64
+
+	secretEncryption      atomic.Int64
+	secretsEncrypted      atomic.Int64
+	secretEncryptFailures atomic.Int64
 }
 
-func newMetrics(cluster string) *metrics { return &metrics{cluster: cluster} }
+func newMetrics(cluster string) *metrics {
+	return &metrics{cluster: cluster, started: time.Now().Unix()}
+}
 
 func (m *metrics) write(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	g := func(name, help, typ string, v int64) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n%s{cluster=%q} %d\n", name, help, name, typ, name, m.cluster, v)
 	}
+	fmt.Fprintf(w, "# HELP pickle_build_info Version pickle was built as.\n# TYPE pickle_build_info gauge\npickle_build_info{cluster=%q,version=%q,goversion=%q} 1\n", m.cluster, version, runtime.Version())
+	g("pickle_start_time_seconds", "Unix time pickle started.", "gauge", m.started)
 	g("pickle_backfill_types_total", "Resource types to backfill.", "gauge", m.backfillTypesTotal.Load())
 	g("pickle_backfill_types_done", "Resource types backfilled so far.", "gauge", m.backfillTypesDone.Load())
 	g("pickle_backfill_complete", "1 once the initial backfill has finished.", "gauge", m.backfillComplete.Load())
@@ -54,6 +64,9 @@ func (m *metrics) write(w http.ResponseWriter) {
 	g("pickle_resyncs_total", "Full relists of a type after its watch expired (410 Gone).", "counter", m.resyncs.Load())
 	g("pickle_resources_watched", "Resource types being watched.", "gauge", m.resourcesWatched.Load())
 	g("pickle_resources_forbidden", "Discovered resource types pickle cannot read (listed in _unreadable.txt).", "gauge", m.resourcesForbidden.Load())
+	g("pickle_secret_encryption_enabled", "1 when Secret values are encrypted (encryption-cert is set).", "gauge", m.secretEncryption.Load())
+	g("pickle_secret_values_encrypted_total", "Secret values encrypted; unchanged values keep their line and are not counted.", "counter", m.secretsEncrypted.Load())
+	g("pickle_secret_encryption_failures_total", "Secret values that could not be encrypted and were written masked.", "counter", m.secretEncryptFailures.Load())
 
 	samples := []rtmetrics.Sample{
 		{Name: "/gc/heap/live:bytes"},

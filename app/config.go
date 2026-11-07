@@ -30,6 +30,7 @@ type config struct {
 	AuthorEmail       string
 
 	FingerprintKey []byte
+	Encrypter      *encrypter // nil: Secret values are masked, not encrypted
 
 	CommitDelay         time.Duration
 	CommitMaxDelay      time.Duration
@@ -184,6 +185,9 @@ func loadConfig() (*config, error) {
 	if c.FingerprintKey, err = readFingerprintKey(env("PICKLE_SECRET_FINGERPRINT_KEY_FILE", "/etc/pickle/git/fingerprint-key")); err != nil {
 		return nil, err
 	}
+	if c.Encrypter, err = readEncryptionCert(env("PICKLE_SECRET_ENCRYPTION_CERT_FILE", "/etc/pickle/git/encryption-cert"), c.FingerprintKey); err != nil {
+		return nil, err
+	}
 	if c.RediscoveryInterval, err = optDurEnv("PICKLE_REDISCOVERY_INTERVAL"); err != nil {
 		return nil, err
 	}
@@ -243,6 +247,22 @@ func readFingerprintKey(p string) ([]byte, error) {
 		return nil, fmt.Errorf("secret fingerprint key %s must be at least %d characters (e.g. openssl rand -hex 32)", p, minFingerprintKey)
 	}
 	return b, nil
+}
+
+// readEncryptionCert reads the certificate Secret values are encrypted to.
+// No file: encryption is off.
+func readEncryptionCert(p string, fingerprintKey []byte) (*encrypter, error) {
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err == nil {
+		var enc *encrypter
+		if enc, err = newEncrypter(b, fingerprintKey); err == nil {
+			return enc, nil
+		}
+	}
+	return nil, fmt.Errorf("encryption-cert %s: %w", p, err)
 }
 
 func env(k, def string) string {

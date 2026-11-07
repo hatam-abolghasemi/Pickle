@@ -772,20 +772,43 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	var srcSum [32]byte
 	var h header
 	var refs refSet
+	var seal func() ([]byte, error) // set while an encrypted Secret's src is still masked
 	headerCounts := e.headerCounts(r.id())
 	if !deleted && !skip {
 		h = readHeader(u)
 		n := normalize(u)
 		if r.isSecret() {
-			maskSecret(n, e.cfg.FingerprintKey)
+			data, _ := n.Object["data"].(map[string]any)
+			if enc := e.cfg.Encrypter; enc != nil && len(data) > 0 {
+				seal = func() ([]byte, error) {
+					sealed, encrypted, failed := enc.seal(n.GetNamespace()+"/"+n.GetName(), data, e.writtenSecret(p))
+					e.m.secretsEncrypted.Add(int64(encrypted))
+					e.m.secretEncryptFailures.Add(int64(failed))
+					n.Object["data"] = sealed
+					return json.Marshal(n.Object)
+				}
+				maskSecret(n, enc.fpKey)
+			} else {
+				maskSecret(n, e.cfg.FingerprintKey)
+			}
 		}
 		var err error
 		if src, err = json.Marshal(n.Object); err != nil {
 			slog.Warn("render failed", "path", p, "err", err)
 			return p
 		}
+		// For an encrypted Secret, src is still the masked form: its
+		// fingerprints change exactly when a value does, so an unchanged
+		// Secret is skipped below without reading its file or encrypting.
 		srcSum = sourceHash(h, src, headerCounts)
 		refs = secretRefs(r.gvr.Group, r.kind, u.Object)
+		if seal != nil && !e.renderedFrom(p, srcSum) {
+			if src, err = seal(); err != nil {
+				slog.Warn("render failed", "path", p, "err", err)
+				return p
+			}
+			seal = nil
+		}
 	}
 
 	e.mu.Lock()
@@ -818,6 +841,13 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	if existed && old.src == srcSum {
 		return p // rendered from exactly this before
 	}
+	if seal != nil { // changed since renderedFrom looked
+		var err error
+		if src, err = seal(); err != nil {
+			slog.Warn("render failed", "path", p, "err", err)
+			return p
+		}
+	}
 	content, err := renderJSON(h, src)
 	if err != nil {
 		slog.Warn("render failed", "path", p, "err", err)
@@ -842,6 +872,24 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	}
 	e.markLocked(p, change{op: op, manager: h.manager})
 	return p
+}
+
+// renderedFrom reports whether p was last rendered from srcSum.
+func (e *engine) renderedFrom(p string, srcSum [32]byte) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	old, ok := e.entries[p]
+	return ok && old.src == srcSum
+}
+
+// writtenSecret is the data of p as last written, so unchanged values keep
+// their encrypted lines.
+func (e *engine) writtenSecret(p string) map[string]string {
+	b, err := os.ReadFile(e.abs(p))
+	if err != nil {
+		return nil
+	}
+	return writtenSecretData(b)
 }
 
 func (e *engine) removeLocked(p, manager string) {
