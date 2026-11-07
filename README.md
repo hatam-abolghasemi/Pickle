@@ -7,7 +7,7 @@
 Pickle watches every object in your cluster and keeps a clean, re-appliable copy of it in Git.
 
 [![CI](https://github.com/hatam-abolghasemi/pickle/actions/workflows/ci.yml/badge.svg)](https://github.com/hatam-abolghasemi/pickle/actions/workflows/ci.yml)
-![Go](https://img.shields.io/badge/go-1.24-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)
 ![RBAC](https://img.shields.io/badge/RBAC-read--only-success)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
@@ -107,14 +107,14 @@ sudo kubectl -n pickle logs -f deploy/pickle
 
 ## Security
 
-Pickle can read everything and write nothing. Secret values become `****` in memory before anything touches disk. Anything it can't read is listed in `_unreadable.txt`, so nothing is missed silently. Details: [docs/security.md](docs/security.md).
+Pickle can read everything and write nothing. Secret values become `****` in memory before anything touches disk, or, if you opt in, are encrypted to your own certificate, so you can restore them from the repo with `pickle decrypt` or plain OpenSSL. Anything it can't read is listed in `_unreadable.txt`, so nothing is missed silently. Details: [docs/security.md](docs/security.md).
 
 ## Docs
 
 - [How it works](docs/how-it-works.md)
 - [Configuration](docs/configuration.md)
 - [Security](docs/security.md)
-- [Operations](docs/operations.md)
+- [Operations](docs/operations.md), with a [Grafana dashboard](dashboards/pickle.json)
 - [Restore](docs/restore.md)
 - [Comparison with Velero and others](docs/comparison.md)
 
