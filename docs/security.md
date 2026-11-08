@@ -151,12 +151,70 @@ Good to know:
 |---|---|---|---|
 | `pickle.key` | Your private key: the only thing that decrypts [encrypted Secret values](#encrypted-values) | `~/.config/pickle/`, plus a backup in a password manager or vault. Never in the cluster or a repo. | Nobody can decrypt the values in Git anymore. Make a new key pair; values are encrypted again from then on. |
 | `pickle.crt` | Your certificate, given to pickle to encrypt with | `~/.config/pickle/`. It isn't secret. | Run step 2 of [encrypted values](#encrypted-values) again: it keeps your `pickle.key` and makes a new certificate for it. |
-| `fingerprint_key` (the `fingerprint-key` value) | Keys the Secret fingerprints | With the chart managing the Secret: next to your deploy key, outside any repo. With `git.existingSecret`: only in the cluster's `pickle-git` Secret. | A new one rewrites every Secret file once. Nothing else breaks. |
+| `fingerprint_key` (the `fingerprint-key` value) | Keys the Secret fingerprints | With the chart managing the Secret: next to your deploy key, outside any repo. With `git.existingSecret`: in the cluster's `pickle-git` Secret, and in your [backup](#back-up-and-restore). | A new one rewrites every Secret file once. Nothing else breaks. |
 | `pickle_deploy_key` | Pickle's SSH key, with write access to the jar repo | Outside any repo; after installing, only the `pickle-git` Secret needs it. | Make a new one and replace it in your Git host and the `pickle-git` Secret. |
 | `known_hosts` | Your Git host's SSH host keys | Anywhere. It isn't secret. | Run `ssh-keyscan` again. |
 | Your values file | Pickle's settings for one cluster | Commit it wherever you keep deployment config. It holds no secrets. | Write it again from [`values-sample.yaml`](../helm/values-sample.yaml). |
 
 The `*.base64.yaml` and `*.raw.yaml` files `pickle decrypt` writes hold plain Secret values. They are for the moment you need them: delete them with `pickle decrypt -clean` when you're done.
+
+## Back up and restore
+
+One zip holds everything to restore pickle: your key pair, the deploy key, `known_hosts` and the cluster's `pickle-git` Secret, which includes its fingerprint key. Anyone who can open it can decrypt every Secret in your jar repo, so keep it somewhere private, such as a password manager, a vault or a private cloud folder.
+
+**Back up.** Collect the files in RAM (`/dev/shm`), where they never touch disk. Adjust the deploy key and `known_hosts` paths to where you keep them:
+
+```bash
+B=/dev/shm/pickle-backup && rm -rf $B && mkdir -m 700 $B && cp ~/.config/pickle/pickle.key ~/.config/pickle/pickle.crt ./pickle_deploy_key ./known_hosts $B/
+```
+
+Add the cluster's Secret and its fingerprint key:
+
+```bash
+sudo kubectl -n pickle get secret pickle-git -o yaml > $B/pickle-git.yaml && sudo kubectl -n pickle get secret pickle-git -o jsonpath='{.data.fingerprint-key}' | base64 -d > $B/fingerprint_key
+```
+
+Zip it, then remove the copy in RAM:
+
+```bash
+cd /dev/shm && zip -r ~/Documents/pickle-backup-$(date +%F).zip pickle-backup && cd - > /dev/null && rm -rf /dev/shm/pickle-backup
+```
+
+Check it, then move `~/Documents/pickle-backup-<date>.zip` to its safe place:
+
+```bash
+unzip -l ~/Documents/pickle-backup-$(date +%F).zip
+```
+
+**Restore.** Unzip it in RAM:
+
+```bash
+unzip -q ~/Downloads/pickle-backup-*.zip -d /dev/shm && cd /dev/shm/pickle-backup && ls
+```
+
+On a new laptop, put the key pair back, so `pickle decrypt` works again:
+
+```bash
+mkdir -p ~/.config/pickle && chmod 700 ~/.config/pickle && cp pickle.key pickle.crt ~/.config/pickle/ && chmod 600 ~/.config/pickle/pickle.key
+```
+
+On a new or rebuilt cluster, recreate the `pickle-git` Secret from the files. `pickle-git.yaml` is there to read; it carries the old cluster's IDs, so don't apply it as it is:
+
+```bash
+sudo kubectl create namespace pickle
+```
+
+```bash
+sudo kubectl -n pickle create secret generic pickle-git --from-file=ssh-privatekey=pickle_deploy_key --from-file=known_hosts=known_hosts --from-file=fingerprint-key=fingerprint_key --from-file=encryption-cert=pickle.crt
+```
+
+Then install pickle with `git.existingSecret: pickle-git` in your values file, as in the [README](../README.md#upgrade). To bring the cluster's Secrets back from the jar repo, see [restore](restore.md).
+
+Remove the unzipped copy when you're done:
+
+```bash
+rm -rf /dev/shm/pickle-backup
+```
 
 ## The trade-off
 
