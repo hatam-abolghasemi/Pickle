@@ -4,6 +4,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-08
+
+### Added
+
+- An opt-in ServiceMonitor in the Helm chart, for Prometheus Operator: `serviceMonitor.enabled: true`, with `serviceMonitor.interval` and `serviceMonitor.labels`.
+
+### Fixed
+
+- The Grafana dashboard failed to import in Grafana 13: its variables had no `current` value.
+
 ## [1.2.0] - 2026-11-08
 
 ### Changed
@@ -147,7 +157,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...v1.1.0
 [1.0.6]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...v1.0.6
