@@ -2,7 +2,14 @@
 
 ## Metrics
 
-Prometheus format on `:9090/metrics`, exposed by the `pickle` Service.
+Prometheus format on `:9090/metrics`, exposed by the `pickle` Service. The pod carries `prometheus.io/scrape` annotations. With Prometheus Operator, which ignores them, turn on the chart's ServiceMonitor in your values file:
+
+```yaml
+serviceMonitor:
+  enabled: true
+```
+
+If your Prometheus only picks up ServiceMonitors with a certain label, set it under `serviceMonitor.labels`, such as `release: prometheus`.
 
 | Metric | |
 |---|---|
