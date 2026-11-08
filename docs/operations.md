@@ -2,14 +2,12 @@
 
 ## Metrics
 
-Prometheus format on `:9090/metrics`, exposed by the `pickle` Service. The pod carries `prometheus.io/scrape` annotations. With Prometheus Operator, which ignores them, turn on the chart's ServiceMonitor in your values file:
+Prometheus format on `:9090/metrics`, exposed by the `pickle` Service. The pod carries `prometheus.io/scrape` annotations, and on clusters with Prometheus Operator, which ignores them, the chart also creates a ServiceMonitor. If your Prometheus only picks up ServiceMonitors with a certain label, set it under `serviceMonitor.labels`, such as `release: prometheus`. If it scrapes pods by their annotations too, turn the ServiceMonitor off, or pickle is scraped twice:
 
 ```yaml
 serviceMonitor:
-  enabled: true
+  enabled: false
 ```
-
-If your Prometheus only picks up ServiceMonitors with a certain label, set it under `serviceMonitor.labels`, such as `release: prometheus`.
 
 | Metric | |
 |---|---|

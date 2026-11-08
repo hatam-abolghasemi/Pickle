@@ -91,9 +91,10 @@ service:
   port: 9090
 
 # A ServiceMonitor for Prometheus Operator, which ignores the
-# prometheus.io annotations below. Needs service.enabled.
+# prometheus.io annotations below. Created only where the cluster has
+# ServiceMonitors, so it's skipped without the operator. Needs service.enabled.
 serviceMonitor:
-  enabled: false
+  enabled: true
   interval: 30s
   # Labels your Prometheus selects ServiceMonitors by, if it does.
   labels: {}
