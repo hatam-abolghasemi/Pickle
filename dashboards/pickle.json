@@ -7159,7 +7159,10 @@
           "pluginId": "prometheus",
           "refresh": "onDashboardLoad",
           "regex": "",
-          "current": {},
+          "current": {
+            "text": "",
+            "value": ""
+          },
           "options": [],
           "multi": false,
           "includeAll": false,
@@ -7174,7 +7177,10 @@
         "kind": "QueryVariable",
         "spec": {
           "name": "cluster",
-          "current": {},
+          "current": {
+            "text": "",
+            "value": ""
+          },
           "label": "Cluster",
           "hide": "dontHide",
           "refresh": "onDashboardLoad",
