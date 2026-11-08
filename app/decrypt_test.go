@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -75,60 +74,6 @@ func TestGoldenDecryptsWithOpenSSL(t *testing.T) {
 			t.Errorf("%s: openssl gave %q", k, got)
 		}
 	}
-}
-
-// TestDocsDecryptFunction runs pickle_decrypt exactly as docs/restore.md
-// defines it, on the golden file.
-func TestDocsDecryptFunction(t *testing.T) {
-	for _, tool := range []string{"bash", "openssl", "base64"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip(tool + " not installed")
-		}
-	}
-	doc := string(mustRead(t, "../docs/restore.md"))
-	fn := regexp.MustCompile(`(?m)^pickle_decrypt\(\) .*$`).FindString(doc)
-	if fn == "" {
-		t.Fatal("pickle_decrypt not found in docs/restore.md")
-	}
-	key, _ := filepath.Abs(goldenKey)
-	fn = strings.ReplaceAll(fn, "~/.config/pickle/pickle.key", key)
-	cmd := exec.Command("bash", "-c", fn+"\npickle_decrypt \"$1\"", "bash", goldenSecret)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("%v\n%s", err, stderr.String())
-	}
-	want := secretData(t, mustRead(t, goldenSource))
-	got := secretData(t, out)
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s = %q, want %q", k, got[k], v)
-		}
-	}
-	if !bytes.Equal(out, must(decryptFile(mustKey(t, goldenKey), mustRead(t, goldenSecret)))) {
-		t.Error("pickle_decrypt and pickle decrypt must print the same bytes")
-	}
-
-	// A damaged value: the function fails and prints nothing.
-	golden := string(mustRead(t, goldenSecret))
-	v := secretData(t, []byte(golden))["DB_PASSWORD"]
-	der, _ := base64.StdEncoding.DecodeString(v[strings.LastIndex(v, ":")+1:])
-	der[len(der)-20] ^= 1
-	bad := filepath.Join(t.TempDir(), "secret-bad.yaml")
-	os.WriteFile(bad, []byte(strings.Replace(golden, v, "enc:273e83a494cc:"+base64.StdEncoding.EncodeToString(der), 1)), 0o644)
-	cmd = exec.Command("bash", "-c", fn+"\npickle_decrypt \"$1\"", "bash", bad)
-	out, err = cmd.Output()
-	if err == nil || len(out) > 0 {
-		t.Errorf("a damaged value must fail and print nothing: err %v, %d bytes printed", err, len(out))
-	}
-}
-
-func must(b []byte, _ int, errs []error) []byte {
-	if len(errs) > 0 {
-		panic(errs[0])
-	}
-	return b
 }
 
 // TestDecryptOpenSSLBlobs: values encrypted with openssl itself open too.
@@ -219,67 +164,177 @@ func TestReadPrivateKey(t *testing.T) {
 	}
 }
 
-func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
+func runCLI(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	code := runDecrypt(args, strings.NewReader(stdin), &out, &errOut)
+	code := runDecrypt(args, &out, &errOut)
 	return code, out.String(), errOut.String()
 }
 
-func TestDecryptCommand(t *testing.T) {
-	want := secretData(t, mustRead(t, goldenSource))
-	golden := string(mustRead(t, goldenSecret))
-
+// jar lays out a pickle jar clone: two clusters, Secrets in two namespaces,
+// and a ConfigMap that must be left alone.
+func jar(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, "stg", "payments"), 0o755)
-	os.MkdirAll(filepath.Join(dir, "stg", "web"), 0o755)
-	os.WriteFile(filepath.Join(dir, "stg", "payments", "secret-golden.yaml"), []byte(golden), 0o644)
-	os.WriteFile(filepath.Join(dir, "stg", "web", "secret-golden.yaml"), []byte(golden), 0o644)
-	os.WriteFile(filepath.Join(dir, "stg", "web", "configmap-x.yaml"), []byte("kind: ConfigMap\n"), 0o644)
+	golden := mustRead(t, goldenSecret)
+	for _, p := range []string{"stg/payments/secret-golden.yaml", "stg/web/secret-golden.yaml", "prod/payments/secret-golden.yaml"} {
+		os.MkdirAll(filepath.Join(dir, filepath.Dir(p)), 0o755)
+		os.WriteFile(filepath.Join(dir, p), golden, 0o644)
+	}
+	os.WriteFile(filepath.Join(dir, "stg/web/configmap-x.yaml"), []byte("kind: ConfigMap\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755)
+	return dir
+}
 
-	code, out, errOut := runCLI(t, "", "-key", goldenKey, filepath.Join(dir, "stg"))
+func TestDecryptCommand(t *testing.T) {
+	dir := jar(t)
+	want := secretData(t, mustRead(t, goldenSource))
+
+	code, out, errOut := runCLI(t, "-key", goldenKey, filepath.Join(dir, "stg"))
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	docs := strings.Split(out, "---\n")
-	if len(docs) != 2 || strings.Contains(out, "ConfigMap") {
-		t.Fatalf("want the 2 Secrets of the directory, got:\n%s", out)
+	if !strings.Contains(out, "decrypted 2 Secrets") {
+		t.Errorf("stdout %q", out)
 	}
-	for _, d := range docs {
-		if got := secretData(t, []byte(d)); got["DB_PASSWORD"] != want["DB_PASSWORD"] {
-			t.Errorf("DB_PASSWORD = %q", got["DB_PASSWORD"])
+	for _, ns := range []string{"payments", "web"} {
+		base := filepath.Join(dir, "stg", ns, "secret-golden")
+		b64 := mustRead(t, base+".base64.yaml")
+		if !bytes.HasPrefix(b64, []byte(decryptedMark)) {
+			t.Error("decrypted files must start with the mark")
+		}
+		if got := secretData(t, b64); len(got) != len(want) {
+			t.Errorf("base64 has %d keys", len(got))
+		} else {
+			for k, v := range want {
+				if got[k] != v && !(v == "" && got[k] == "") {
+					t.Errorf("base64 %s = %q, want %q", k, got[k], v)
+				}
+			}
+		}
+		if bytes.Contains(b64, []byte("empty: \n")) || !bytes.Contains(b64, []byte(`empty: ""`)) {
+			t.Error(`an empty value must be "" in the base64 file, not null`)
+		}
+		// The raw file holds the same values in plain text, exactly.
+		var raw struct {
+			Data       map[string]string `json:"data"`
+			StringData map[string]string `json:"stringData"`
+		}
+		if err := yaml.Unmarshal(mustRead(t, base+".raw.yaml"), &raw); err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range want {
+			plain, _ := base64.StdEncoding.DecodeString(v)
+			if s, ok := raw.StringData[k]; ok {
+				if s != string(plain) {
+					t.Errorf("raw %s = %q, want %q", k, s, plain)
+				}
+			} else if raw.Data[k] != v {
+				t.Errorf("raw %s: binary value must stay base64 under data, got %q", k, raw.Data[k])
+			}
+		}
+		if _, ok := raw.Data["binary"]; !ok || raw.StringData["tls.crt"] == "" {
+			t.Errorf("raw file: binary under data, text under stringData: %+v", raw)
+		}
+		if st, _ := os.Stat(base + ".raw.yaml"); st.Mode().Perm() != 0o600 {
+			t.Errorf("decrypted files must be 0600, got %v", st.Mode().Perm())
 		}
 	}
-
-	if code, out, _ := runCLI(t, golden, "-key", goldenKey); code != 0 || secretData(t, []byte(out))["unicode"] != want["unicode"] {
-		t.Errorf("stdin: exit %d", code)
+	if _, err := os.Stat(filepath.Join(dir, "prod/payments/secret-golden.base64.yaml")); err == nil {
+		t.Error("only the given folder must be decrypted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stg/web/configmap-x.base64.yaml")); err == nil {
+		t.Error("only Secrets must be decrypted")
+	}
+	ex := string(mustRead(t, filepath.Join(dir, ".git/info/exclude")))
+	if !strings.Contains(ex, "secret-*.raw.yaml") || !strings.Contains(ex, "secret-*.base64.yaml") {
+		t.Errorf("decrypted files must be git-ignored: %q", ex)
 	}
 
+	// A second run on the whole jar skips what it wrote and adds no second
+	// exclude block.
+	if code, out, errOut := runCLI(t, "-key", goldenKey, dir); code != 0 || !strings.Contains(out, "decrypted 3 Secrets") {
+		t.Fatalf("whole jar: exit %d, %q, %q", code, out, errOut)
+	}
+	if strings.Count(string(mustRead(t, filepath.Join(dir, ".git/info/exclude"))), "secret-*.raw.yaml") != 1 {
+		t.Error("the exclude lines must be added once")
+	}
+
+	// One file.
+	if code, _, errOut := runCLI(t, "-key", goldenKey, filepath.Join(dir, "stg/web/secret-golden.yaml")); code != 0 {
+		t.Errorf("one file: %s", errOut)
+	}
+	if code, _, _ := runCLI(t, "-key", goldenKey, filepath.Join(dir, "stg/web/secret-golden.raw.yaml")); code != 1 {
+		t.Error("a decrypted file is not input")
+	}
+
+	// -clean removes exactly what decrypt wrote.
+	if code, out, _ := runCLI(t, "-clean", dir); code != 0 || !strings.Contains(out, "removed 6") {
+		t.Errorf("clean: exit %d, %q", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "stg/web/secret-golden.yaml")); err != nil {
+		t.Error("-clean must keep the encrypted files")
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.raw.yaml")); len(m) > 0 {
+		t.Errorf("left after -clean: %v", m)
+	}
+}
+
+// TestDecryptAllOrNothing: one bad value anywhere, and nothing is written.
+func TestDecryptAllOrNothing(t *testing.T) {
+	dir := jar(t)
+	golden := string(mustRead(t, goldenSecret))
 	v := secretData(t, []byte(golden))["DB_PASSWORD"]
-	plain, _ := base64.StdEncoding.DecodeString(want["DB_PASSWORD"])
-	if code, out, _ := runCLI(t, "", "-key", goldenKey, "-value", v); code != 0 || out != string(plain) {
-		t.Errorf("-value: exit %d, %q", code, out)
+	der, _ := base64.StdEncoding.DecodeString(v[strings.LastIndex(v, ":")+1:])
+	der[len(der)-20] ^= 1
+	os.WriteFile(filepath.Join(dir, "stg/web/secret-golden.yaml"), []byte(strings.Replace(golden, v, "enc:273e83a494cc:"+base64.StdEncoding.EncodeToString(der), 1)), 0o644)
+	code, _, errOut := runCLI(t, "-key", goldenKey, dir)
+	if code != 1 || !strings.Contains(errOut, "key DB_PASSWORD") || !strings.Contains(errOut, "nothing written") {
+		t.Errorf("exit %d, %q", code, errOut)
 	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.base64.yaml")); len(m) > 0 {
+		t.Errorf("written despite a failure: %v", m)
+	}
+	if code, _, errOut := runCLI(t, "-key", "testdata/decrypt/pickle.crt", dir); code != 1 || !strings.Contains(errOut, "certificate") {
+		t.Errorf("a certificate as key: exit %d, %q", code, errOut)
+	}
+}
 
-	// One bad value: nothing at all is printed, so a pipe into kubectl
-	// apply applies nothing half-decrypted.
-	bad := strings.Replace(golden, v, "enc:273e83a494cc:"+b64("garbage"), 1)
-	os.WriteFile(filepath.Join(dir, "stg", "web", "secret-golden.yaml"), []byte(bad), 0o644)
-	code, out, errOut = runCLI(t, "", "-key", goldenKey, filepath.Join(dir, "stg"))
-	if code != 1 || out != "" || !strings.Contains(errOut, "key DB_PASSWORD") || !strings.Contains(errOut, "nothing printed") {
-		t.Errorf("exit %d, stdout %q, stderr %q", code, out, errOut)
+// TestDecryptSkipsMasked: Secrets written before encryption was on are
+// skipped with a note; the rest are decrypted.
+func TestDecryptSkipsMasked(t *testing.T) {
+	dir := jar(t)
+	os.WriteFile(filepath.Join(dir, "stg/web/secret-old.yaml"), []byte("apiVersion: v1\nkind: Secret\nmetadata:\n  name: old\ndata:\n  A: '****:3f9a1c7e5b2d'\n"), 0o644)
+	code, out, errOut := runCLI(t, "-key", goldenKey, filepath.Join(dir, "stg"))
+	if code != 0 || !strings.Contains(out, "decrypted 2") || !strings.Contains(errOut, "skipped") {
+		t.Errorf("exit %d, %q, %q", code, out, errOut)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "stg/web/secret-old.raw.yaml")); err == nil {
+		t.Error("a masked Secret must not get decrypted files")
+	}
+}
 
-	masked := "apiVersion: v1\ndata:\n  A: '****:3f9a1c7e5b2d'\nkind: Secret\n"
-	if code, out, errOut := runCLI(t, masked, "-key", goldenKey); code != 0 || out != masked || !strings.Contains(errOut, "masked") {
-		t.Errorf("masked file: exit %d, %q, %q", code, out, errOut)
+func TestFindKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PICKLE_KEY", "")
+	if _, err := findKey(""); err == nil || !strings.Contains(err.Error(), "-key") {
+		t.Errorf("no key: %v", err)
 	}
-
-	if code, _, _ := runCLI(t, "", filepath.Join(dir, "stg")); code != 2 {
-		t.Errorf("without -key: exit %d, want 2", code)
+	p := filepath.Join(home, ".config", "pickle", "pickle.key")
+	os.MkdirAll(filepath.Dir(p), 0o700)
+	os.WriteFile(p, mustRead(t, goldenKey), 0o600)
+	if got, err := findKey(""); err != nil || got != p {
+		t.Errorf("default key: %q, %v", got, err)
 	}
-	if code, _, _ := runCLI(t, "", "-key", goldenKey, filepath.Join(dir, "nope")); code != 1 {
-		t.Errorf("missing path: exit %d, want 1", code)
+	other := filepath.Join(home, "other.key")
+	os.WriteFile(other, mustRead(t, goldenKey), 0o600)
+	t.Setenv("PICKLE_KEY", other)
+	if got, _ := findKey(""); got != other {
+		t.Errorf("PICKLE_KEY: %q", got)
+	}
+	if got, _ := findKey("x.key"); got != "x.key" {
+		t.Errorf("-key wins: %q", got)
 	}
 }
 

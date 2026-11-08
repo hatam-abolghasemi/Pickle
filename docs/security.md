@@ -64,7 +64,7 @@ data:
 
 The blob is a standard CMS AuthEnvelopedData: AES-256-GCM encrypts the value, RSA-OAEP (SHA-256) encrypts that AES key to your certificate. GCM authenticates the value, so decrypting gives exactly the original bytes or fails with an error; a damaged or altered blob never decrypts to something wrong. Pickle gets only your certificate: it can encrypt, never decrypt. Diffs stay per key: an unchanged value keeps its line.
 
-Two ways to decrypt, both all-or-nothing (if one value fails, nothing is printed): `pickle decrypt`, which needs no OpenSSL and runs anywhere Docker or Go does, and plain OpenSSL 3. See [restore](restore.md).
+`pickle decrypt` opens them, for a whole cluster, a namespace or one Secret: next to each Secret it writes a base64 and a plain-text copy, both ready for `kubectl apply`, or nothing at all if any value fails. Plain OpenSSL 3 opens single values too. See [restore](restore.md).
 
 **1. Make sure pickle has a fingerprint key.** Encryption needs one; pickle refuses to start without it. This prints nothing if it's missing:
 
@@ -124,7 +124,7 @@ sudo kubectl -n pickle logs deploy/pickle | grep "pickle starting"
 
 Every Secret file is rewritten once with `enc:` values on the next push.
 
-**5. Test a restore now**, not on incident day. Pull the repo and decrypt one Secret with your key, as in [restore](restore.md). If it prints the Secret with real values, you're set.
+**5. Test a restore now**, not on incident day. Pull the repo and decrypt one namespace with your key, as in [restore](restore.md). If its `.raw.yaml` files show your real values, you're set.
 
 **Turning it off:** remove `encryption-cert`, then restart. New values go back to `****:<fingerprint>`.
 
@@ -140,7 +140,7 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 
 Good to know:
 
-- A blob opens only with the key whose certificate it was encrypted to. After a new certificate, keep the old key as long as you may need the old commits; `pickle decrypt` says `wrong key` when you use the other one.
+- A blob opens only with the key whose certificate it was encrypted to. After a new certificate, keep the old key as long as you may need the old commits; `pickle decrypt` says `wrong key` when you use another one.
 - Git keeps every blob ever pushed. Whoever has the key and the repo can decrypt all of them; a new certificate or turning encryption off only changes new commits.
 - There is one certificate, so one key. Share `pickle.key` only with whoever should be able to restore Secrets.
 - A value that can't be encrypted is written as `****:<fingerprint>`, never in plain, and counted in `pickle_secret_encryption_failures_total`.
