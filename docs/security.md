@@ -81,7 +81,7 @@ mkdir -p ~/.config/pickle && chmod 700 ~/.config/pickle && cd "$(mktemp -d)"
 ```
 
 ```bash
-openssl genrsa -out ~/.config/pickle/pickle.key 4096 && chmod 600 ~/.config/pickle/pickle.key
+if [ -e ~/.config/pickle/pickle.key ]; then echo "pickle.key exists: keeping it"; else openssl genrsa -out ~/.config/pickle/pickle.key 4096 && chmod 600 ~/.config/pickle/pickle.key; fi
 ```
 
 ```bash
@@ -144,6 +144,19 @@ Good to know:
 - Git keeps every blob ever pushed. Whoever has the key and the repo can decrypt all of them; a new certificate or turning encryption off only changes new commits.
 - There is one certificate, so one key. Share `pickle.key` only with whoever should be able to restore Secrets.
 - A value that can't be encrypted is written as `****:<fingerprint>`, never in plain, and counted in `pickle_secret_encryption_failures_total`.
+
+## Keep these files safe
+
+| File | What it is | Where to keep it | If you lose it |
+|---|---|---|---|
+| `pickle.key` | Your private key: the only thing that decrypts [encrypted Secret values](#encrypted-values) | `~/.config/pickle/`, plus a backup in a password manager or vault. Never in the cluster or a repo. | Nobody can decrypt the values in Git anymore. Make a new key pair; values are encrypted again from then on. |
+| `pickle.crt` | Your certificate, given to pickle to encrypt with | `~/.config/pickle/`. It isn't secret. | Run step 2 of [encrypted values](#encrypted-values) again: it keeps your `pickle.key` and makes a new certificate for it. |
+| `fingerprint_key` (the `fingerprint-key` value) | Keys the Secret fingerprints | With the chart managing the Secret: next to your deploy key, outside any repo. With `git.existingSecret`: only in the cluster's `pickle-git` Secret. | A new one rewrites every Secret file once. Nothing else breaks. |
+| `pickle_deploy_key` | Pickle's SSH key, with write access to the jar repo | Outside any repo; after installing, only the `pickle-git` Secret needs it. | Make a new one and replace it in your Git host and the `pickle-git` Secret. |
+| `known_hosts` | Your Git host's SSH host keys | Anywhere. It isn't secret. | Run `ssh-keyscan` again. |
+| Your values file | Pickle's settings for one cluster | Commit it wherever you keep deployment config. It holds no secrets. | Write it again from [`values-sample.yaml`](../helm/values-sample.yaml). |
+
+The `*.base64.yaml` and `*.raw.yaml` files `pickle decrypt` writes hold plain Secret values. They are for the moment you need them: delete them with `pickle decrypt -clean` when you're done.
 
 ## The trade-off
 

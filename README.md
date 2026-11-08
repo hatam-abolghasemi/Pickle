@@ -105,6 +105,28 @@ sudo kubectl apply -f k8s/
 sudo kubectl -n pickle logs -f deploy/pickle
 ```
 
+### Upgrade
+
+Keep your settings in a values file per cluster, like [`helm/values-sample.yaml`](helm/values-sample.yaml), say `values-stg.yaml`. If it sets `image.tag`, change it to the new version from the [changelog](CHANGELOG.md) first. Then, if the chart manages the `pickle-git` Secret, pass its files again, every time (leave out the last two if you don't use [encrypted Secret values](docs/security.md#encrypted-values)):
+
+```bash
+helm upgrade pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle -n pickle -f values-stg.yaml --set-file git.sshPrivateKey=./pickle_deploy_key --set-file git.knownHosts=./known_hosts --set-file secrets.fingerprintKey=./fingerprint_key --set-file secrets.encryptionCert=$HOME/.config/pickle/pickle.crt
+```
+
+With `git.existingSecret` in the values file, the Secret is yours and stays as it is, so the values file is all it takes:
+
+```bash
+helm upgrade pickle oci://ghcr.io/hatam-abolghasemi/charts/pickle -n pickle -f values-stg.yaml
+```
+
+Check the new version is running:
+
+```bash
+sudo kubectl -n pickle logs deploy/pickle | grep "pickle starting"
+```
+
+Which files to keep, and where: [security](docs/security.md#keep-these-files-safe). Decrypting Secrets from the jar: [restore](docs/restore.md).
+
 ## Security
 
 Pickle can read everything and write nothing. Secret values become `****` in memory before anything touches disk, or, if you opt in, are encrypted to your own certificate, so you can restore them from the repo with `pickle decrypt` or plain OpenSSL. Anything it can't read is listed in `_unreadable.txt`, so nothing is missed silently. Details: [docs/security.md](docs/security.md).
