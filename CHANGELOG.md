@@ -4,6 +4,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-08
+
+### Changed
+
+- `pickle decrypt` is one command for a whole jar, a cluster, a namespace or one Secret: `pickle decrypt stg/payments`. Next to every `secret-<name>.yaml` it writes `secret-<name>.base64.yaml` (values under `data`) and `secret-<name>.raw.yaml` (plain values under `stringData`), both ready for `kubectl apply`, or nothing at all if any value fails. It finds the key at `~/.config/pickle/pickle.key` (or `/pickle.key` in Docker) and keeps its files out of git through the clone's `.git/info/exclude`. `pickle decrypt -clean` removes them. This replaces printing to stdout and `-value`, and the OpenSSL shell function in the docs. See [docs/restore.md](docs/restore.md).
+
+### Fixed
+
+- An empty Secret value decrypted to `null` instead of `""`.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added
@@ -137,7 +147,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...v1.1.0
 [1.0.6]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.4...v1.0.5
