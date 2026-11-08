@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -23,110 +24,183 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
+
+	"sigs.k8s.io/yaml"
 )
 
 const decryptUsage = `Usage:
-  pickle decrypt -key pickle.key [FILE or DIR ...]
-  pickle decrypt -key pickle.key -value 'enc:<fingerprint>:<blob>'
+  pickle decrypt [-key FILE] [PATH ...]
+  pickle decrypt -clean [PATH ...]
 
-Prints Secret files with every enc: value decrypted, ready for kubectl apply.
-A directory means every secret-*.yaml under it; no path or "-" reads stdin.
-With -value, prints one value's plain bytes.
+PATH is a pickle jar repo, a cluster folder, a namespace folder or one
+secret-*.yaml file; the default is the current folder. Next to every
+encrypted Secret it writes two files you can kubectl apply:
 
-If anything fails to decrypt, nothing is printed and the exit code is 1.
+  secret-<name>.base64.yaml   the Secret with its values under data (base64)
+  secret-<name>.raw.yaml      the same Secret with plain values under stringData
+
+They are kept out of git through the clone's .git/info/exclude. If any value
+fails to decrypt, nothing is written. -clean removes the written files.
+
+The key is -key, $PICKLE_KEY, ~/.config/pickle/pickle.key or /pickle.key.
 `
 
+// decryptedMark starts every file pickle decrypt writes: it tells them apart
+// from the jar's own files, for -clean and for the next run.
+const decryptedMark = "# pickle decrypt: plain Secret values. Never commit this file.\n"
+
 // runDecrypt is the decrypt command. It works offline, without a cluster or
-// any config: only the private key and the files.
-func runDecrypt(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+// any config: only the private key and the jar repo.
+func runDecrypt(args []string, stdout, stderr io.Writer) int {
 	fl := flag.NewFlagSet("decrypt", flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	fl.Usage = func() { fmt.Fprint(stderr, decryptUsage) }
 	keyFile := fl.String("key", "", "private key (PEM, RSA)")
-	value := fl.String("value", "", "decrypt one value instead of files")
+	clean := fl.Bool("clean", false, "remove the files pickle decrypt wrote")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
-	if *keyFile == "" {
-		fmt.Fprintln(stderr, "pickle decrypt: -key is required")
-		fl.Usage()
-		return 2
+	paths := fl.Args()
+	if len(paths) == 0 {
+		paths = []string{"."}
 	}
-	key, err := readPrivateKey(*keyFile)
-	if err != nil {
-		fmt.Fprintf(stderr, "pickle decrypt: %v\n", err)
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(stderr, "pickle decrypt: "+format+"\n", a...)
 		return 1
 	}
 
-	if *value != "" {
-		plain, err := decryptValue(key, *value)
+	var files []string
+	for _, p := range paths {
+		f, err := secretFiles(p)
 		if err != nil {
-			fmt.Fprintf(stderr, "pickle decrypt: %v\n", err)
-			return 1
+			return fail("%v", err)
 		}
-		stdout.Write(plain)
+		files = append(files, f...)
+	}
+
+	if *clean {
+		n := 0
+		for _, f := range files {
+			for _, out := range decryptedPaths(f) {
+				if b, err := os.ReadFile(out); err == nil && bytes.HasPrefix(b, []byte(decryptedMark)) {
+					if err := os.Remove(out); err != nil {
+						return fail("%v", err)
+					}
+					n++
+				}
+			}
+		}
+		fmt.Fprintf(stdout, "removed %s\n", plural(n, "decrypted file"))
 		return 0
 	}
 
-	paths := fl.Args()
-	if len(paths) == 0 {
-		paths = []string{"-"}
+	kp, err := findKey(*keyFile)
+	if err != nil {
+		return fail("%v", err)
 	}
-	var out bytes.Buffer
-	failed := false
-	n := 0
-	for _, p := range paths {
-		files, err := secretFiles(p)
+	key, err := readPrivateKey(kp)
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	// Decrypt everything first; write only if every value opened.
+	type output struct{ path, content string }
+	var outs []output
+	var errs []string
+	masked := 0
+	for _, f := range files {
+		content, err := os.ReadFile(f)
 		if err != nil {
-			fmt.Fprintf(stderr, "pickle decrypt: %v\n", err)
-			failed = true
+			errs = append(errs, err.Error())
 			continue
 		}
-		for _, f := range files {
-			var content []byte
-			if f == "-" {
-				content, err = io.ReadAll(stdin)
-			} else {
-				content, err = os.ReadFile(f)
-			}
-			if err != nil {
-				fmt.Fprintf(stderr, "pickle decrypt: %v\n", err)
-				failed = true
-				continue
-			}
-			plain, masked, errs := decryptFile(key, content)
-			if masked > 0 {
-				fmt.Fprintf(stderr, "pickle decrypt: %s: %d value(s) are masked, not encrypted; fill them in before applying\n", f, masked)
-			}
-			for _, e := range errs {
-				fmt.Fprintf(stderr, "pickle decrypt: %s: %v\n", f, e)
-				failed = true
-			}
-			if n > 0 {
-				out.WriteString("---\n")
-			}
-			out.Write(plain)
-			n++
+		b64, nMasked, ferrs := decryptFile(key, content)
+		for _, e := range ferrs {
+			errs = append(errs, fmt.Sprintf("%s: %v", f, e))
+		}
+		if nMasked > 0 {
+			masked++
+			fmt.Fprintf(stderr, "pickle decrypt: skipped %s: its values are masked (****), not encrypted\n", f)
+			continue
+		}
+		if len(ferrs) > 0 {
+			continue
+		}
+		raw, err := rawSecret(b64)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", f, err))
+			continue
+		}
+		p := decryptedPaths(f)
+		outs = append(outs, output{p[0], decryptedMark + string(b64)}, output{p[1], decryptedMark + string(raw)})
+	}
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(stderr, "pickle decrypt: %s\n", e)
+		}
+		return fail("nothing written")
+	}
+	for _, o := range outs {
+		if err := os.WriteFile(o.path, []byte(o.content), 0o600); err != nil {
+			return fail("%v", err)
 		}
 	}
-	if failed {
-		fmt.Fprintln(stderr, "pickle decrypt: nothing printed")
-		return 1
+	ignored := excludeFromGit(paths[0])
+	fmt.Fprintf(stdout, "decrypted %s: *.base64.yaml and *.raw.yaml next to each\n", plural(len(outs)/2, "Secret"))
+	if !ignored {
+		fmt.Fprintln(stderr, "pickle decrypt: not inside a git clone, so the files are not git-ignored; never commit them")
 	}
-	stdout.Write(out.Bytes())
+	if masked > 0 {
+		fmt.Fprintf(stderr, "pickle decrypt: %s skipped: written masked, before encryption was on\n", plural(masked, "Secret"))
+	}
 	return 0
 }
 
-// secretFiles expands p: a directory becomes every secret-*.yaml under it.
-func secretFiles(p string) ([]string, error) {
-	if p == "-" {
-		return []string{p}, nil
+func plural(n int, what string) string {
+	if n == 1 {
+		return "1 " + what
 	}
+	return fmt.Sprintf("%d %ss", n, what)
+}
+
+// decryptedPaths are the two files written for secret-<name>.yaml.
+func decryptedPaths(f string) [2]string {
+	base := strings.TrimSuffix(f, ".yaml")
+	return [2]string{base + ".base64.yaml", base + ".raw.yaml"}
+}
+
+func findKey(flagKey string) (string, error) {
+	if flagKey != "" {
+		return flagKey, nil
+	}
+	tried := []string{}
+	if p := os.Getenv("PICKLE_KEY"); p != "" {
+		tried = append(tried, p)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		tried = append(tried, filepath.Join(home, ".config", "pickle", "pickle.key"))
+	}
+	tried = append(tried, "/pickle.key")
+	for _, p := range tried {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("no private key found (tried %s); pass -key", strings.Join(tried, ", "))
+}
+
+// secretFiles expands p to the jar's secret-*.yaml files under it, leaving
+// out what pickle decrypt wrote.
+func secretFiles(p string) ([]string, error) {
 	st, err := os.Stat(p)
 	if err != nil {
 		return nil, err
 	}
 	if !st.IsDir() {
+		if isDecrypted(p) {
+			return nil, fmt.Errorf("%s is a decrypted file; pass the encrypted secret-*.yaml", p)
+		}
 		return []string{p}, nil
 	}
 	var files []string
@@ -137,7 +211,7 @@ func secretFiles(p string) ([]string, error) {
 		if d.IsDir() && d.Name() == ".git" {
 			return filepath.SkipDir
 		}
-		if !d.IsDir() && strings.HasPrefix(d.Name(), "secret-") && strings.HasSuffix(d.Name(), ".yaml") {
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "secret-") && strings.HasSuffix(d.Name(), ".yaml") && !isDecrypted(f) {
 			files = append(files, f)
 		}
 		return nil
@@ -149,12 +223,93 @@ func secretFiles(p string) ([]string, error) {
 	return files, err
 }
 
+func isDecrypted(f string) bool {
+	fh, err := os.Open(f)
+	if err != nil {
+		return false
+	}
+	defer fh.Close()
+	head := make([]byte, len(decryptedMark))
+	n, _ := io.ReadFull(fh, head)
+	return string(head[:n]) == decryptedMark
+}
+
+// excludeFromGit adds the decrypted file names to the clone's
+// .git/info/exclude, which is local and never pushed. It reports whether p
+// is inside a git clone.
+func excludeFromGit(p string) bool {
+	dir, err := filepath.Abs(p)
+	if err != nil {
+		return false
+	}
+	if st, err := os.Stat(dir); err == nil && !st.IsDir() {
+		dir = filepath.Dir(dir)
+	}
+	for {
+		gitDir := filepath.Join(dir, ".git")
+		if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
+			ex := filepath.Join(gitDir, "info", "exclude")
+			b, _ := os.ReadFile(ex)
+			if bytes.Contains(b, []byte(excludeLines)) {
+				return true
+			}
+			if err := os.MkdirAll(filepath.Dir(ex), 0o755); err != nil {
+				return false
+			}
+			if len(b) > 0 && !bytes.HasSuffix(b, []byte("\n")) {
+				b = append(b, '\n')
+			}
+			return os.WriteFile(ex, append(b, excludeLines...), 0o644) == nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+const excludeLines = "# pickle decrypt: plain Secret values\nsecret-*.base64.yaml\nsecret-*.raw.yaml\n"
+
+// rawSecret turns a decrypted Secret into the same Secret with plain values
+// under stringData. A value that isn't text stays under data, as base64.
+func rawSecret(b64 []byte) ([]byte, error) {
+	var obj map[string]any
+	if err := yaml.Unmarshal(b64, &obj); err != nil {
+		return nil, err
+	}
+	data, _ := obj["data"].(map[string]any)
+	plain := map[string]any{}
+	for k, v := range data {
+		s, _ := v.(string)
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("key %s: %w", k, err)
+		}
+		if utf8.Valid(b) {
+			plain[k] = string(b)
+			delete(data, k)
+		}
+	}
+	if len(data) == 0 {
+		delete(obj, "data")
+	}
+	if len(plain) > 0 {
+		obj["stringData"] = plain
+	}
+	j, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	return toYAML(j)
+}
+
 // encLine is a data line holding an encrypted value: key, then the value,
 // quoted or not.
 var encLine = regexp.MustCompile(`^(\s+(\S+?):\s+)['"]?(enc:[0-9a-f]+:[A-Za-z0-9+/=]+)['"]?\s*$`)
 
 // maskedLine is a data line pickle wrote masked (****, ****:<fingerprint>).
-var maskedLine = regexp.MustCompile(`^\s+\S+:\s+'\*\*\*\*(:[0-9a-f]+)?'\s*$`)
+var maskedLine = regexp.MustCompile(`^\s+\S+:\s+['"]?\*\*\*\*(:[0-9a-f]+)?['"]?\s*$`)
 
 // decryptFile rewrites the enc: values under data: to the API's base64 form
 // and leaves every other line as it is. It counts masked values and returns
@@ -176,7 +331,11 @@ func decryptFile(key *rsa.PrivateKey, content []byte) (out []byte, masked int, e
 					errs = append(errs, fmt.Errorf("key %s: %w", m[2], err))
 					continue
 				}
-				b.WriteString(m[1] + base64.StdEncoding.EncodeToString(plain) + "\n")
+				v := base64.StdEncoding.EncodeToString(plain)
+				if v == "" {
+					v = `""`
+				}
+				b.WriteString(m[1] + v + "\n")
 				continue
 			}
 			if maskedLine.MatchString(body) {

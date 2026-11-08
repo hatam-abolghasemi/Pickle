@@ -28,61 +28,56 @@ The `secret-*.yaml` files keep each Secret's type, labels and keys. What to do n
 
 `****` or `****:<fingerprint>`: fill in real values from your vault before applying them.
 
-`enc:<fingerprint>:<blob>` ([encrypted values](security.md#encrypted-values)): decrypt them with your private key, one of two ways. Both give exactly the original values or fail: if any value can't be decrypted, nothing is printed and nothing gets applied.
-
-**With `pickle decrypt`**, on any OS, without OpenSSL. With Docker, from the cloned repo:
+`enc:<fingerprint>:<blob>` ([encrypted values](security.md#encrypted-values)): decrypt them with `pickle decrypt` and your private key. Make a shortcut once; it runs pickle's image, so you need only Docker and the key:
 
 ```bash
-docker run --rm -i --user "$(id -u)" -v "$HOME/.config/pickle/pickle.key:/pickle.key:ro" -v "$PWD:/repo:ro" ghcr.io/hatam-abolghasemi/pickle:latest decrypt -key /pickle.key /repo/stg/payments/secret-payments-db.yaml
+echo 'alias pickle-decrypt='"'"'docker run --rm --user "$(id -u):$(id -g)" -v "$HOME/.config/pickle/pickle.key:/pickle.key:ro" -v "$PWD:/repo" -w /repo ghcr.io/hatam-abolghasemi/pickle:latest decrypt'"'"'' >> ~/.bashrc && source ~/.bashrc
 ```
 
-That prints the Secret with real values. Point it at a directory to get every `secret-*.yaml` under it, then apply them:
+Then, from the root of your jar clone, decrypt a whole cluster, one namespace or one Secret:
 
 ```bash
-docker run --rm -i --user "$(id -u)" -v "$HOME/.config/pickle/pickle.key:/pickle.key:ro" -v "$PWD:/repo:ro" ghcr.io/hatam-abolghasemi/pickle:latest decrypt -key /pickle.key /repo/stg | sudo kubectl apply -f -
-```
-
-Without Docker, build it from pickle's source (Go 1.26+) and run it the same way:
-
-```bash
-git clone https://github.com/hatam-abolghasemi/pickle /tmp/pickle-src && go -C /tmp/pickle-src/app build -o /tmp/pickle .
+pickle-decrypt stg
 ```
 
 ```bash
-/tmp/pickle decrypt -key ~/.config/pickle/pickle.key stg | sudo kubectl apply -f -
+pickle-decrypt stg/payments
 ```
-
-One value on its own prints its plain bytes:
 
 ```bash
-/tmp/pickle decrypt -key ~/.config/pickle/pickle.key -value 'enc:3f9a1c7e5b2d:MIIC...'
+pickle-decrypt stg/payments/secret-payments-db.yaml
 ```
 
-**With OpenSSL 3** (Linux; needs bash, GNU base64 and `openssl` 3.0 or newer). Define this once in your shell:
+Next to every `secret-<name>.yaml` it writes two files, and both apply with `kubectl`:
+
+- `secret-<name>.base64.yaml`: the Secret with its values under `data`, in base64, as the API keeps them.
+- `secret-<name>.raw.yaml`: the same Secret with plain, readable values under `stringData`. A value that isn't text, like a keystore, stays under `data` in base64.
+
+If any value fails to decrypt, nothing is written. The files are kept out of git through your clone's `.git/info/exclude`, which is local and never pushed. Secrets written before encryption was on (`****`) are skipped with a note.
+
+Apply one Secret, or every Secret of the cluster:
 
 ```bash
-pickle_decrypt() { local out="" line key v; while IFS= read -r line || [[ -n $line ]]; do if [[ $line =~ ^(\ +[^:\ ]+):\ [\'\"]?enc:[0-9a-f]+:([A-Za-z0-9+/=]+)[\'\"]?$ ]]; then key=${BASH_REMATCH[1]}; v=$(set -o pipefail; printf %s "${BASH_REMATCH[2]}" | base64 -d | openssl cms -decrypt -inform DER -inkey ~/.config/pickle/pickle.key | base64 -w0) || { echo "pickle_decrypt: $1: ${key//[[:space:]]/}: cannot decrypt, nothing printed" >&2; return 1; }; out+="$key: $v"$'\n'; else out+="$line"$'\n'; fi; done < "$1"; printf %s "$out"; }
+sudo kubectl apply -f stg/payments/secret-payments-db.base64.yaml
 ```
-
-Look at one Secret decrypted:
 
 ```bash
-pickle_decrypt stg/payments/secret-payments-db.yaml
+find stg -name 'secret-*.base64.yaml' -exec sudo kubectl apply -f {} \;
 ```
 
-Apply every Secret of the cluster:
+Remove the decrypted files when you're done:
 
 ```bash
-for f in stg/*/secret-*.yaml; do pickle_decrypt "$f" | sudo kubectl apply -f -; done
+pickle-decrypt -clean stg
 ```
 
-One value on its own:
+`wrong key` means the values were encrypted to another certificate: use the key that goes with it, such as the old key for commits from before a new certificate. `damaged or altered` means a blob isn't what pickle wrote; take the file from another commit.
+
+Without Docker, plain OpenSSL 3 opens one value:
 
 ```bash
 echo '<blob>' | base64 -d | openssl cms -decrypt -inform DER -inkey ~/.config/pickle/pickle.key
 ```
-
-`wrong key`, or OpenSSL's `Error decrypting CMS structure` (it may print junk after it), means the value was encrypted to another certificate: use the key that goes with it. `damaged or altered` means the blob isn't the one pickle wrote; take it from another commit.
 
 **4. Everything else**, dry run first:
 
