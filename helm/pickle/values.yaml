@@ -90,6 +90,14 @@ service:
   enabled: true
   port: 9090
 
+# A ServiceMonitor for Prometheus Operator, which ignores the
+# prometheus.io annotations below. Needs service.enabled.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  # Labels your Prometheus selects ServiceMonitors by, if it does.
+  labels: {}
+
 podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "9090"
