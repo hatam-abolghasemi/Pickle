@@ -8,7 +8,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
-- An opt-in ServiceMonitor in the Helm chart, for Prometheus Operator: `serviceMonitor.enabled: true`, with `serviceMonitor.interval` and `serviceMonitor.labels`.
+- A ServiceMonitor in the Helm chart, for Prometheus Operator. It is on by default and created only on clusters that have ServiceMonitors, so it is skipped elsewhere. Set `serviceMonitor.labels` if your Prometheus selects ServiceMonitors by label, or `serviceMonitor.enabled: false` if it also scrapes pods by their `prometheus.io` annotations.
 
 ### Fixed
 
