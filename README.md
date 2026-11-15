@@ -52,6 +52,17 @@ A payments/configmap-hotfix-whitelist.yaml  [kubectl-client-side-apply]
 M payments/deployment-payments-api.yaml     [kubectl-edit]
 ```
 
+When the change came from a sync, the header also names who started it. Pickle works with [Argo CD](https://argo-cd.readthedocs.io/) and with [tiphys](https://github.com/ravanbod/tiphys), the access portal developers use to sync Argo CD applications without cluster or Argo CD credentials of their own:
+
+```yaml
+# last-manager: argocd-controller (Apply)
+# last-changed: 2026-11-15T09:00:10Z
+# argocd-app: payments-api
+# argocd-initiated-by: sara (tiphys)
+```
+
+A sync from Argo CD itself shows the Argo CD user, or `automated` for auto-sync and self-heal. Without either, pickle just leaves the line out. Details: [docs/how-it-works.md](docs/how-it-works.md#header).
+
 ## How it works
 
 ```mermaid
