@@ -110,6 +110,7 @@ type engine struct {
 	backfilled map[string]bool   // resource ids fully backfilled
 	brokenAPIs map[string]string // group/version -> why discovery failed for it
 	excluded   map[string]bool   // resource ids excluded by PICKLE_EXCLUDE
+	argo       *argoSyncs        // last sync of each Argo CD Application, for headers
 
 	changed    chan struct{} // something is waiting to be committed
 	rediscover chan struct{} // the set of served types may have changed
@@ -139,8 +140,8 @@ func newEngine(cfg *config, dyn dynamic.Interface, disco discoverer, g *gitStore
 		entries: map[string]entry{}, aux: map[string][32]byte{}, idx: newSecretIndex(),
 		dirty: map[string]change{}, unpushed: map[string]change{},
 		backfill: true, touched: map[string]bool{}, visited: map[string]bool{}, backfilled: map[string]bool{},
-		excluded: map[string]bool{},
-		changed:  make(chan struct{}, 1), rediscover: make(chan struct{}, 1),
+		excluded: map[string]bool{}, argo: newArgoSyncs(),
+		changed: make(chan struct{}, 1), rediscover: make(chan struct{}, 1),
 	}
 	if data, err := os.ReadFile(e.abs(path.Join(cfg.Cluster, kindsFile))); err == nil {
 		if err := e.reg.load(data); err != nil {
@@ -756,6 +757,9 @@ func metaObject(m *metav1.PartialObjectMetadata) *unstructured.Unstructured {
 // handle mirrors one object (or its deletion) to disk. live=true for watch/resync
 // events, which always win over backfill pages. Returns the object's repo path.
 func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live bool) string {
+	if isArgoApplication(r) {
+		e.argo.note(u, deleted)
+	}
 	p := objPath(e.cfg.Cluster, r.namespaced, u.GetNamespace(), r.token, u.GetName())
 	// Owned objects derive from a parent we already mirror, unless their
 	// owner is in PICKLE_MIRROR_OWNED_BY.
@@ -780,6 +784,11 @@ func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live
 	headerCounts := e.headerCounts(r.id())
 	if !deleted && !skip {
 		h = readHeader(u)
+		// A header-only change rewrites a file where the header counts, so
+		// the sync lines, which depend on the Application, stay out there.
+		if !headerCounts {
+			e.argo.attribute(&h)
+		}
 		n := normalize(u)
 		if r.isSecret() {
 			data, _ := n.Object["data"].(map[string]any)

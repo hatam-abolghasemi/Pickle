@@ -75,20 +75,22 @@ Output is deterministic. Unchanged bytes mean no write and no commit, so status 
 From `managedFields`, ignoring the `status` subresource:
 
 ```yaml
-# last-manager: kubectl-edit (Update)
+# last-manager: argocd-controller (Apply)
 # last-changed: 2026-10-14T17:52:03Z
 # argocd-app: payments-api
+# argocd-initiated-by: hatam
 ```
 
 - `last-manager`: the tool that last changed the object (`argocd-controller`, `helm`, `kubectl-edit`, an operator...).
 - `last-changed`: when that happened on the cluster.
 - `argocd-app`: from Argo's tracking annotation or instance label.
+- `argocd-initiated-by`: who started the Argo CD sync that made this change, from the Application's `status.operationState`: the operation's `Triggered by` info if it has one, else the Argo CD username, else `automated` for auto-sync and self-heal. Portals that sync through Argo CD's API with their own account, like tiphys, name their user in that info, so a sync from tiphys shows as `sara (tiphys)`; a rollback from tiphys has no info and shows the portal's Argo CD account. The info is free text from whoever called the sync API, not a verified identity. It is written only when Argo CD made the last change and made it during the Application's last sync, so a change from an older sync or from `kubectl` never gets someone else's name. The Application must be mirrored too (it is, unless excluded or watched as metadata only). Secrets masked without a fingerprint key don't get it; see below. With no Argo CD in the cluster, or an Application with nothing usable in its status, the line is simply left out.
 
 The header is only refreshed when the rest of the file changes. Some controllers, such as the Argo CD application controller, write status through the object itself, which moves its `managedFields` time on every reconcile even though nothing pickle writes has changed.
 
 A commit only holds net changes against the commit before it. An object that changes and changes back between two commits, such as an Application with a sync or refresh request that Argo CD clears seconds later, is left as it was committed, header included. Secrets masked without a [fingerprint key](security.md#secrets) are the exception: their header is the only sign a value changed, so it is always written.
 
-The user and source IP aren't stored on objects; only API server audit logs have them.
+For changes outside Argo CD, the user, source IP and the RBAC binding that allowed the change aren't stored on objects; only API server audit logs have them.
 
 ## Skipped
 

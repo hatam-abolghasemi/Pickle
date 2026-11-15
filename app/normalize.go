@@ -30,6 +30,9 @@ type header struct {
 	operation string
 	changed   string
 	argoApp   string
+	// Set by argoSyncs.attribute, not readHeader: the Application's last
+	// sync, when it made this object's last change.
+	argoInitiatedBy string
 }
 
 func readHeader(u *unstructured.Unstructured) header {
@@ -91,6 +94,9 @@ func (h header) render() string {
 	}
 	if h.argoApp != "" {
 		b.WriteString("# argocd-app: " + h.argoApp + "\n")
+	}
+	if h.argoInitiatedBy != "" {
+		b.WriteString("# argocd-initiated-by: " + h.argoInitiatedBy + "\n")
 	}
 	return b.String()
 }
