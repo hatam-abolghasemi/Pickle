@@ -17,6 +17,8 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_EXCLUDE` | empty | Types never mirrored; see [Excluding](#excluding) |
 | `PICKLE_EXCLUDE_NAMESPACES` | empty | Namespaces never mirrored; shell patterns like `tmp-*` |
 | `PICKLE_METADATA_WATCH` | `core/pods,apps/replicasets,batch/jobs` | Types watched as metadata only: owned objects are skipped without reading their spec and status, objects without an owner are read whole. For types whose objects nearly always have an owner and change all the time. Empty: every type is read whole |
+| `PICKLE_EXCLUDE_SECRET_TYPES` | `helm.sh/release.v1` | Secret types never mirrored, e.g. `kubernetes.io/tls`; see [Excluding](#excluding). Empty: every type is mirrored |
+| `PICKLE_MIRROR_OWNED_BY` | `SealedSecret.bitnami.com` | Owner kinds whose objects are mirrored anyway; see [Owned objects](#owned-objects). Empty: every owned object is skipped |
 | `PICKLE_REDISCOVERY_INTERVAL` | `off` | Optional timer for picking up new types; at least `1m` |
 | `PICKLE_PAGE_SIZE` | `50` | Objects per LIST page |
 | `PICKLE_PAGE_PAUSE` | `200ms` | Pause between pages |
@@ -64,7 +66,29 @@ config:
 
 Excluded types are never watched or listed, so they cost nothing. Objects in excluded namespaces are skipped in the backfill, and their events are dropped, including the Namespace object itself. Files mirrored before an exclusion are removed on the next start, in the `initial sync complete` commit.
 
+`PICKLE_EXCLUDE_SECRET_TYPES` drops Secrets by their `type`, a comma-separated list of exact values. The default, `helm.sh/release.v1`, drops Helm's release records: each is a whole release, chart and values gzipped, rewritten on every upgrade, while the objects it installed are mirrored on their own. Set it to empty to mirror them anyway. Service account tokens are always skipped. Their files go away on the next start, like any exclusion.
+
 These come on top of the built-in exclusions in [how it works](how-it-works.md#skipped).
+
+## Owned objects
+
+Objects with `ownerReferences` are skipped: their parent is mirrored and recreates them. `PICKLE_MIRROR_OWNED_BY` makes an exception for objects owned by the kinds it lists, written `Kind` (any group), `Kind.group` or `*.group`, matched against the owner's `apiVersion` and `kind`. One matching owner is enough.
+
+The default, `SealedSecret.bitnami.com`, is for [Sealed Secrets](https://github.com/bitnami-labs/sealed-secrets). A SealedSecret only opens with the controller's private key, so a repo holding only SealedSecrets can't be restored without that key. With the default, each Secret the controller made is mirrored next to its SealedSecret, masked or [encrypted](security.md#encrypted-values) like any Secret, and restores with pickle's key alone. See [restore](restore.md#sealed-secrets) for which one to apply.
+
+```yaml
+PICKLE_MIRROR_OWNED_BY: "SealedSecret.bitnami.com,Prometheus.monitoring.coreos.com"
+```
+
+With Helm:
+
+```yaml
+config:
+  mirrorOwnedBy:
+    - SealedSecret.bitnami.com
+```
+
+Mirrored files never carry `ownerReferences`. Set it to empty to skip every owned object, as in 1.2.1 and earlier.
 
 ## Git credentials
 

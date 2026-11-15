@@ -118,12 +118,19 @@ func TestEngineEndToEnd(t *testing.T) {
 	// State from a previous run plus another cluster's directory on the same branch.
 	pushFile(t, remote, "prod/payments/configmap-keep.yaml", "kind: ConfigMap\n", "prod")
 	pushFile(t, remote, "stg/payments/configmap-gone.yaml", "kind: ConfigMap\n", "old stg")
+	// Mirrored before Helm release Secrets were excluded by default.
+	pushFile(t, remote, "stg/payments/secret-rel.yaml", "kind: Secret\n", "old stg helm")
 
+	mirrorOwnedBy, err := parseMirrorOwnedBy("", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config{
 		Cluster: "stg", RepoDir: filepath.Join(t.TempDir(), "repo"), GitURL: remote, GitBranch: "master",
 		AuthorName: "pickle", AuthorEmail: "pickle@stg.local",
 		CommitDelay: 100 * time.Millisecond, CommitMaxDelay: time.Second,
 		PageSize: 1, PagePause: time.Millisecond,
+		ExcludeSecretTypes: parseExcludeSecretTypes("", false), MirrorOwnedBy: mirrorOwnedBy,
 	}
 
 	listKinds := map[schema.GroupVersionResource]string{
@@ -142,6 +149,9 @@ func TestEngineEndToEnd(t *testing.T) {
 		obj(t, `{apiVersion: v1, kind: ConfigMap, metadata: {name: app-config, namespace: payments}, data: {LOG_LEVEL: info}}`),
 		obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: db, namespace: payments}, data: {PASSWORD: c3VwZXJzZWNyZXQ=}}`),
 		obj(t, `{apiVersion: v1, kind: Secret, type: kubernetes.io/service-account-token, metadata: {name: tok, namespace: payments}, data: {token: eHh4}}`),
+		obj(t, `{apiVersion: v1, kind: Secret, type: helm.sh/release.v1, metadata: {name: rel, namespace: payments}, data: {release: eHh4}}`),
+		obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: sealed, namespace: payments, ownerReferences: [{apiVersion: bitnami.com/v1alpha1, kind: SealedSecret, name: sealed, uid: s}]}, data: {TOKEN: dG9rZW4=}}`),
+		obj(t, `{apiVersion: v1, kind: Secret, type: Opaque, metadata: {name: prom, namespace: payments, ownerReferences: [{apiVersion: monitoring.coreos.com/v1, kind: Prometheus, name: k8s, uid: p}]}, data: {cfg: eHh4}}`),
 		obj(t, `{apiVersion: v1, kind: Event, metadata: {name: ev1, namespace: payments}}`),
 		obj(t, `{apiVersion: apps/v1, kind: Deployment, metadata: {name: api, namespace: payments},
 		       spec: {template: {spec: {containers: [{name: c, env: [{name: P, valueFrom: {secretKeyRef: {name: db, key: PASSWORD}}}]}]}}}}`),
@@ -170,25 +180,30 @@ func TestEngineEndToEnd(t *testing.T) {
 	waitFor(t, "initial sync pushed", func() bool {
 		f := remoteFiles(t, remote)
 		_, gone := f["stg/payments/configmap-gone.yaml"]
-		return m.backfillComplete.Load() == 1 && f["stg/payments/deployment-api.yaml"] != "" && !gone
+		_, helm := f["stg/payments/secret-rel.yaml"]
+		return m.backfillComplete.Load() == 1 && f["stg/payments/deployment-api.yaml"] != "" && !gone && !helm
 	})
 	f := remoteFiles(t, remote)
 	for _, p := range []string{
 		"stg/_kinds.txt", "stg/_cluster/namespace-payments.yaml", "stg/_cluster/clusterrole-system_view.yaml",
 		"stg/payments/configmap-app-config.yaml", "stg/payments/secret-db.yaml", "stg/payments/_secrets-referenced.txt",
+		"stg/payments/secret-sealed.yaml",
 		"prod/payments/configmap-keep.yaml", "stg/_unreadable.txt", "stg/_cluster-id.txt",
 	} {
 		if f[p] == "" {
 			t.Errorf("remote missing %s; have %v", p, keys(f))
 		}
 	}
-	for _, p := range []string{"stg/payments/secret-tok.yaml", "stg/payments/event-ev1.yaml", "stg/payments/replicaset-api-123.yaml"} {
+	for _, p := range []string{"stg/payments/secret-tok.yaml", "stg/payments/secret-rel.yaml", "stg/payments/secret-prom.yaml", "stg/payments/event-ev1.yaml", "stg/payments/replicaset-api-123.yaml"} {
 		if _, ok := f[p]; ok {
 			t.Errorf("%s should not be mirrored", p)
 		}
 	}
 	if s := f["stg/payments/secret-db.yaml"]; strings.Contains(s, "c3VwZXJzZWNyZXQ=") || !strings.Contains(s, "PASSWORD: '****'") {
 		t.Errorf("secret not masked:\n%s", s)
+	}
+	if s := f["stg/payments/secret-sealed.yaml"]; strings.Contains(s, "dG9rZW4=") || !strings.Contains(s, "TOKEN: '****'") || strings.Contains(s, "ownerReferences") {
+		t.Errorf("a SealedSecret's Secret must be mirrored masked, without its owner:\n%s", s)
 	}
 	if s := f["stg/_unreadable.txt"]; !strings.Contains(s, "example.com/widgets: forbidden") {
 		t.Errorf("bad _unreadable.txt:\n%s", s)

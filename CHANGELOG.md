@@ -4,6 +4,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-11-15
+
+### Added
+
+- `PICKLE_EXCLUDE_SECRET_TYPES` (Helm: `config.excludeSecretTypes`), default `helm.sh/release.v1`: Secret types never mirrored. Helm's release records, each a whole release gzipped and rewritten on every upgrade, are no longer in the repo; the objects they installed still are. Empty: every type is mirrored. See [docs/configuration.md](docs/configuration.md#excluding).
+- `PICKLE_MIRROR_OWNED_BY` (Helm: `config.mirrorOwnedBy`), default `SealedSecret.bitnami.com`: owner kinds whose objects are mirrored anyway, like objects without an owner. A SealedSecret only opens with the sealed-secrets controller's key; its Secret is now mirrored next to it, masked or encrypted like any Secret, so it restores with pickle's key alone. Empty: every owned object is skipped, as before. See [docs/configuration.md](docs/configuration.md#owned-objects) and [docs/restore.md](docs/restore.md#sealed-secrets).
+
+### Changed
+
+- After upgrading, the first start's `initial sync complete` commit removes the files of Helm release Secrets and adds one `secret-<name>.yaml` per Secret made from a SealedSecret.
+
 ## [1.2.1] - 2026-11-08
 
 ### Added
@@ -157,7 +168,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.0.6...v1.1.0

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func setEnv(t *testing.T, kv map[string]string) {
@@ -128,5 +130,83 @@ func TestConfigColor(t *testing.T) {
 	setEnv(t, map[string]string{"PICKLE_COLOR": " Green "})
 	if c, err = loadConfig(); err != nil || c.Color != "🟢" {
 		t.Fatalf("green must map to its marker: %q %v", c.Color, err)
+	}
+}
+
+func TestExcludeSecretTypes(t *testing.T) {
+	setEnv(t, nil)
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ExcludeSecretTypes["helm.sh/release.v1"] || len(c.ExcludeSecretTypes) != 1 {
+		t.Errorf("default: %v", c.ExcludeSecretTypes)
+	}
+	setEnv(t, map[string]string{"PICKLE_EXCLUDE_SECRET_TYPES": ""})
+	if c, _ = loadConfig(); len(c.ExcludeSecretTypes) != 0 {
+		t.Errorf("empty must exclude none: %v", c.ExcludeSecretTypes)
+	}
+	setEnv(t, map[string]string{"PICKLE_EXCLUDE_SECRET_TYPES": "helm.sh/release.v1, kubernetes.io/tls"})
+	if c, _ = loadConfig(); !c.ExcludeSecretTypes["kubernetes.io/tls"] || !c.ExcludeSecretTypes["helm.sh/release.v1"] {
+		t.Errorf("list: %v", c.ExcludeSecretTypes)
+	}
+}
+
+func TestMirrorOwnedBy(t *testing.T) {
+	own := func(apiVersion, kind string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{APIVersion: apiVersion, Kind: kind, Name: "x"}}
+	}
+	sealed := own("bitnami.com/v1alpha1", "SealedSecret")
+	other := own("monitoring.coreos.com/v1", "Prometheus")
+
+	setEnv(t, nil)
+	c, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.mirrorsOwned(nil) {
+		t.Error("an object without owners is always mirrored")
+	}
+	if !c.mirrorsOwned(sealed) {
+		t.Error("default: a SealedSecret's Secret must be mirrored")
+	}
+	if c.mirrorsOwned(other) {
+		t.Error("default: other owned objects are skipped")
+	}
+	if !c.mirrorsOwned(append(other, sealed...)) {
+		t.Error("one matching owner is enough")
+	}
+	if c.mirrorsOwned(own("other.io/v1", "SealedSecret")) {
+		t.Error("the default is limited to bitnami.com")
+	}
+
+	setEnv(t, map[string]string{"PICKLE_MIRROR_OWNED_BY": ""})
+	if c, _ = loadConfig(); c.mirrorsOwned(sealed) {
+		t.Error("empty: every owned object is skipped")
+	}
+
+	setEnv(t, map[string]string{"PICKLE_MIRROR_OWNED_BY": "Prometheus, *.example.io, Deployment.apps, ConfigMap.core"})
+	c, _ = loadConfig()
+	for _, tc := range []struct {
+		owners []metav1.OwnerReference
+		want   bool
+	}{
+		{other, true},
+		{own("v1", "Prometheus"), true},
+		{own("example.io/v2", "Widget"), true},
+		{own("sub.example.io/v1", "Widget"), false},
+		{own("apps/v1", "Deployment"), true},
+		{own("extensions/v1beta1", "Deployment"), false},
+		{own("v1", "ConfigMap"), true},
+		{sealed, false},
+	} {
+		if got := c.mirrorsOwned(tc.owners); got != tc.want {
+			t.Errorf("mirrorsOwned(%s %s) = %v", tc.owners[0].APIVersion, tc.owners[0].Kind, got)
+		}
+	}
+
+	setEnv(t, map[string]string{"PICKLE_MIRROR_OWNED_BY": "*"})
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "PICKLE_MIRROR_OWNED_BY") {
+		t.Errorf("a bare * must be rejected by name: %v", err)
 	}
 }

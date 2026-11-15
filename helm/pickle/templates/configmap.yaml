@@ -25,6 +25,8 @@ data:
   PICKLE_EXCLUDE: {{ join "," .Values.config.exclude | quote }}
   PICKLE_EXCLUDE_NAMESPACES: {{ join "," .Values.config.excludeNamespaces | quote }}
   PICKLE_METADATA_WATCH: {{ join "," .Values.config.metadataWatch | quote }}
+  PICKLE_EXCLUDE_SECRET_TYPES: {{ join "," .Values.config.excludeSecretTypes | quote }}
+  PICKLE_MIRROR_OWNED_BY: {{ join "," .Values.config.mirrorOwnedBy | quote }}
   PICKLE_PAGE_SIZE: {{ .Values.config.pageSize | quote }}
   PICKLE_PAGE_PAUSE: {{ .Values.config.pagePause | quote }}
   PICKLE_QPS: {{ .Values.config.qps | quote }}

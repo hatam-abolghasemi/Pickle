@@ -92,9 +92,10 @@ The user and source IP aren't stored on objects; only API server audit logs have
 
 ## Skipped
 
-- **Derived objects:** anything with `ownerReferences` (ReplicaSets, Pods, Jobs of CronJobs, Applications from ApplicationSets). Their parent is mirrored.
+- **Derived objects:** anything with `ownerReferences` (ReplicaSets, Pods, Jobs of CronJobs, Applications from ApplicationSets). Their parent is mirrored. Objects owned by a kind in `PICKLE_MIRROR_OWNED_BY`, by default Secrets made from SealedSecrets, are mirrored anyway; see [configuration](configuration.md#owned-objects).
 - **Runtime churn:** events, leases, endpoints, endpointslices, controllerrevisions, volumeattachments, csinodes, csistoragecapacities, certificatesigningrequests, ipaddresses, resourceslices, componentstatuses, and the `metrics.k8s.io` group.
 - **ServiceAccount token Secrets**, which the cluster regenerates.
+- **Secret types in `PICKLE_EXCLUDE_SECRET_TYPES`**, by default Helm's release records (`helm.sh/release.v1`).
 - **Your exclusions:** `PICKLE_EXCLUDE` and `PICKLE_EXCLUDE_NAMESPACES`, see [configuration](configuration.md#excluding).
 
 ## Layout

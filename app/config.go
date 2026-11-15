@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type config struct {
@@ -49,6 +51,12 @@ type config struct {
 	// MetadataWatch: resource ids ("group/resource", "core" for the core
 	// group) watched and listed as metadata only, see metadataWatched.
 	MetadataWatch map[string]bool
+	// ExcludeSecretTypes: Secret types never mirrored, see
+	// parseExcludeSecretTypes.
+	ExcludeSecretTypes map[string]bool
+	// MirrorOwnedBy: owner kinds whose children are mirrored anyway, see
+	// parseMirrorOwnedBy and mirrorsOwned.
+	MirrorOwnedBy []excludeRule
 
 	Deprecated []string
 }
@@ -68,6 +76,12 @@ type excludeRule struct {
 //	IPAMBlock.crd.projectcalico.org    a kind (or plural resource) in one group
 //	*.crd.projectcalico.org            every type of one group
 func parseExclude(v string) ([]excludeRule, error) {
+	return parseKindRules("PICKLE_EXCLUDE", v)
+}
+
+// parseKindRules reads a list of Kind, Kind.group or *.group entries for the
+// environment variable envVar.
+func parseKindRules(envVar, v string) ([]excludeRule, error) {
 	var out []excludeRule
 	for _, f := range splitList(v) {
 		r := excludeRule{raw: f}
@@ -77,7 +91,7 @@ func parseExclude(v string) ([]excludeRule, error) {
 			r.group = strings.ToLower(group)
 		}
 		if r.name == "" || (r.name == "*" && !hasGroup) {
-			return nil, fmt.Errorf("PICKLE_EXCLUDE: invalid entry %q (use Kind, Kind.group or *.group)", f)
+			return nil, fmt.Errorf("%s: invalid entry %q (use Kind, Kind.group or *.group)", envVar, f)
 		}
 		out = append(out, r)
 	}
@@ -95,6 +109,27 @@ func (c *config) excluded(group, resource, kind string) bool {
 	for _, r := range c.Exclude {
 		if r.matches(group, resource, kind) {
 			return true
+		}
+	}
+	return false
+}
+
+// mirrorsOwned reports whether an object with these owners is mirrored:
+// always without owners, and with owners only if one of them matches
+// PICKLE_MIRROR_OWNED_BY.
+func (c *config) mirrorsOwned(owners []metav1.OwnerReference) bool {
+	if len(owners) == 0 {
+		return true
+	}
+	for _, o := range owners {
+		group, _, hasGroup := strings.Cut(o.APIVersion, "/")
+		if !hasGroup {
+			group = "" // "v1": the core group
+		}
+		for _, r := range c.MirrorOwnedBy {
+			if r.matches(group, "", o.Kind) {
+				return true
+			}
 		}
 	}
 	return false
@@ -196,6 +231,10 @@ func loadConfig() (*config, error) {
 	}
 	c.ExcludeNamespaces = splitList(os.Getenv("PICKLE_EXCLUDE_NAMESPACES"))
 	if c.MetadataWatch, err = parseMetadataWatch(os.LookupEnv("PICKLE_METADATA_WATCH")); err != nil {
+		return nil, err
+	}
+	c.ExcludeSecretTypes = parseExcludeSecretTypes(os.LookupEnv("PICKLE_EXCLUDE_SECRET_TYPES"))
+	if c.MirrorOwnedBy, err = parseMirrorOwnedBy(os.LookupEnv("PICKLE_MIRROR_OWNED_BY")); err != nil {
 		return nil, err
 	}
 	for _, pat := range c.ExcludeNamespaces {
@@ -335,6 +374,40 @@ func intEnv(k string, def int) (int, error) {
 // (a ReplicaSet's Pods, a Deployment's ReplicaSets, a CronJob's Jobs), so
 // pickle skips them, and whose status changes all the time.
 const defaultMetadataWatch = "core/pods,apps/replicasets,batch/jobs"
+
+// defaultExcludeSecretTypes: Helm's release records. Each holds a whole
+// release, chart and values gzipped, rewritten on every upgrade; the
+// manifests they produced are mirrored on their own.
+const defaultExcludeSecretTypes = "helm.sh/release.v1"
+
+// parseExcludeSecretTypes reads PICKLE_EXCLUDE_SECRET_TYPES: Secret types
+// never mirrored. Unset: the default; empty: none. Service account tokens are
+// always skipped, whatever this says.
+func parseExcludeSecretTypes(v string, set bool) map[string]bool {
+	if !set {
+		v = defaultExcludeSecretTypes
+	}
+	out := map[string]bool{}
+	for _, t := range splitList(v) {
+		out[t] = true
+	}
+	return out
+}
+
+// defaultMirrorOwnedBy: Secrets made by the sealed-secrets controller. Their
+// SealedSecret only opens with the controller's key; mirrored (and encrypted)
+// too, they restore with pickle's key alone.
+const defaultMirrorOwnedBy = "SealedSecret.bitnami.com"
+
+// parseMirrorOwnedBy reads PICKLE_MIRROR_OWNED_BY: owner kinds whose children
+// are mirrored like objects without an owner. Unset: the default; empty:
+// none, every owned object is skipped.
+func parseMirrorOwnedBy(v string, set bool) ([]excludeRule, error) {
+	if !set {
+		v = defaultMirrorOwnedBy
+	}
+	return parseKindRules("PICKLE_MIRROR_OWNED_BY", v)
+}
 
 // parseMetadataWatch reads PICKLE_METADATA_WATCH: resource ids watched as
 // metadata only. Unset: the default; empty: none.

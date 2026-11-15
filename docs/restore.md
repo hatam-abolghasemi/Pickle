@@ -91,6 +91,18 @@ sudo kubectl apply -R -f stg/
 
 Helper `.txt` files are ignored. Unfilled `secret-*.yaml` files fail with a base64 error, which is expected; everything else still applies.
 
+## Sealed Secrets
+
+With the default `PICKLE_MIRROR_OWNED_BY`, each Secret made by the sealed-secrets controller is mirrored next to its `sealedsecret-<name>.yaml`, and decrypted with the rest in step 3. Applied, it holds its values whether or not the controller's key survived.
+
+The controller won't touch a Secret it didn't create, so after restoring them it leaves them alone and logs that each one already exists and isn't managed by a SealedSecret. A later change to a SealedSecret then doesn't reach its Secret. If the new controller has the old cluster's key, hand the Secrets back to it so it takes them over:
+
+```bash
+sudo kubectl get sealedsecrets -A --no-headers | while read ns name _; do sudo kubectl -n "$ns" annotate secret "$name" sealedsecrets.bitnami.com/managed=true --overwrite; done
+```
+
+Without the old key, leave them as they are and reseal each one with the new controller's certificate when it next changes.
+
 ## Notes
 
 - Some objects only fit the old cluster: `node-*.yaml`, PersistentVolumes bound to old disks, `apiservice-*.yaml` for built-in groups, and webhook configs with an injected `caBundle`. Skim `stg/_cluster/` first.

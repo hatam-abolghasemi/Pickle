@@ -691,12 +691,12 @@ func (e *engine) listAllMeta(ctx context.Context, r *resource, ns string, live b
 
 // handleMeta handles an object of a metadata-only type. An owned object is
 // skipped from its metadata alone, as handle would skip it; one without an
-// owner (a bare Pod, a Job no CronJob made) is read whole and handled as
-// usual. Most such objects are owned and change all the time (a Pod's
+// owner (a bare Pod, a Job no CronJob made), or whose owner is in
+// PICKLE_MIRROR_OWNED_BY, is read whole and handled as usual. Most such objects are owned and change all the time (a Pod's
 // status), so this spares decoding their spec and status on every change.
 // Returns the object's repo path, like handle.
 func (e *engine) handleMeta(ctx context.Context, r *resource, m *metav1.PartialObjectMetadata, deleted, live bool) string {
-	if deleted || len(m.OwnerReferences) > 0 {
+	if deleted || !e.cfg.mirrorsOwned(m.OwnerReferences) {
 		return e.handle(r, metaObject(m), deleted, live)
 	}
 	ri := e.dyn.Resource(r.gvr)
@@ -757,15 +757,19 @@ func metaObject(m *metav1.PartialObjectMetadata) *unstructured.Unstructured {
 // events, which always win over backfill pages. Returns the object's repo path.
 func (e *engine) handle(r *resource, u *unstructured.Unstructured, deleted, live bool) string {
 	p := objPath(e.cfg.Cluster, r.namespaced, u.GetNamespace(), r.token, u.GetName())
-	skip := len(u.GetOwnerReferences()) > 0 // derived from a parent we already mirror
+	// Owned objects derive from a parent we already mirror, unless their
+	// owner is in PICKLE_MIRROR_OWNED_BY.
+	skip := !e.cfg.mirrorsOwned(u.GetOwnerReferences())
 	if r.namespaced && e.cfg.namespaceExcluded(u.GetNamespace()) {
 		skip = true
 	}
 	if r.gvr.Group == "" && r.gvr.Resource == "namespaces" && e.cfg.namespaceExcluded(u.GetName()) {
 		skip = true
 	}
-	if r.isSecret() && str(u.Object, "type") == "kubernetes.io/service-account-token" {
-		skip = true
+	if r.isSecret() {
+		if t := str(u.Object, "type"); t == "kubernetes.io/service-account-token" || e.cfg.ExcludeSecretTypes[t] {
+			skip = true
+		}
 	}
 
 	var src []byte

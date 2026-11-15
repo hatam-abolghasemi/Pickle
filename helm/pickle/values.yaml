@@ -60,6 +60,17 @@ config:
     - core/pods
     - apps/replicasets
     - batch/jobs
+  # Secret types never mirrored. Helm's release records hold a whole release
+  # gzipped and change on every upgrade. Empty list: every type is mirrored.
+  # Service account tokens are always skipped.
+  excludeSecretTypes:
+    - helm.sh/release.v1
+  # Owner kinds whose children are mirrored anyway, like objects without an
+  # owner: Kind (any group), Kind.group, or *.group. A SealedSecret's Secret is
+  # then encrypted in the repo, and restores with pickle's key alone.
+  # Empty list: every owned object is skipped.
+  mirrorOwnedBy:
+    - SealedSecret.bitnami.com
   pageSize: 50
   pagePause: 200ms
   qps: 5

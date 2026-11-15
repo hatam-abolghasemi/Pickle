@@ -93,7 +93,7 @@ sudo kubectl -n pickle logs -f deploy/pickle
 
 **Slow backfill.** By design; live changes are captured from the start anyway. To speed it up, raise `PICKLE_QPS` and `PICKLE_PAGE_SIZE` or lower `PICKLE_PAGE_PAUSE`.
 
-**An object is missing.** It probably has `ownerReferences`, its type or namespace is [skipped](how-it-works.md#skipped), or it matches `PICKLE_EXCLUDE`.
+**An object is missing.** It probably has `ownerReferences` from a kind not in `PICKLE_MIRROR_OWNED_BY`, its type or namespace is [skipped](how-it-works.md#skipped), it matches `PICKLE_EXCLUDE`, or it's a Secret whose type is in `PICKLE_EXCLUDE_SECRET_TYPES`.
 
 **A type is just noise in Git.** Exclude it, e.g. `PICKLE_EXCLUDE: "IPAMBlock"`. Its files go away on the next start.
 
