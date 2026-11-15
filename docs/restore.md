@@ -48,21 +48,18 @@ pickle-decrypt stg/payments
 pickle-decrypt stg/payments/secret-payments-db.yaml
 ```
 
-Next to every `secret-<name>.yaml` it writes two files, and both apply with `kubectl`:
-
-- `secret-<name>.base64.yaml`: the Secret with its values under `data`, in base64, as the API keeps them.
-- `secret-<name>.raw.yaml`: the same Secret with plain, readable values under `stringData`. A value that isn't text, like a keystore, stays under `data` in base64.
+Next to every `secret-<name>.yaml` it writes `secret-<name>.raw.yaml`, which applies with `kubectl`: the same file with plain, readable values under `stringData`. The header (`last-manager`, `last-changed`, the `argocd-` lines) and the metadata stay on top, as in the jar file; only the values change. A value that isn't text, like a keystore, stays under `data` in base64.
 
 If any value fails to decrypt, nothing is written. The files are kept out of git through your clone's `.git/info/exclude`, which is local and never pushed. Secrets written before encryption was on (`****`) are skipped with a note.
 
 Apply one Secret, or every Secret of the cluster:
 
 ```bash
-sudo kubectl apply -f stg/payments/secret-payments-db.base64.yaml
+sudo kubectl apply -f stg/payments/secret-payments-db.raw.yaml
 ```
 
 ```bash
-find stg -name 'secret-*.base64.yaml' -exec sudo kubectl apply -f {} \;
+find stg -name 'secret-*.raw.yaml' -exec sudo kubectl apply -f {} \;
 ```
 
 Remove the decrypted files when you're done:

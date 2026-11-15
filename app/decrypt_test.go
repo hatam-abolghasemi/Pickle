@@ -199,21 +199,15 @@ func TestDecryptCommand(t *testing.T) {
 	}
 	for _, ns := range []string{"payments", "web"} {
 		base := filepath.Join(dir, "stg", ns, "secret-golden")
-		b64 := mustRead(t, base+".base64.yaml")
-		if !bytes.HasPrefix(b64, []byte(decryptedMark)) {
+		if _, err := os.Stat(base + ".base64.yaml"); err == nil {
+			t.Error("only the raw file must be written")
+		}
+		rawFile := mustRead(t, base+".raw.yaml")
+		if !bytes.HasPrefix(rawFile, []byte(decryptedMark)) {
 			t.Error("decrypted files must start with the mark")
 		}
-		if got := secretData(t, b64); len(got) != len(want) {
-			t.Errorf("base64 has %d keys", len(got))
-		} else {
-			for k, v := range want {
-				if got[k] != v && !(v == "" && got[k] == "") {
-					t.Errorf("base64 %s = %q, want %q", k, got[k], v)
-				}
-			}
-		}
-		if bytes.Contains(b64, []byte("empty: \n")) || !bytes.Contains(b64, []byte(`empty: ""`)) {
-			t.Error(`an empty value must be "" in the base64 file, not null`)
+		if bytes.Contains(rawFile, []byte("empty: \n")) || !bytes.Contains(rawFile, []byte(`empty: ""`)) {
+			t.Error(`an empty value must be "" in the raw file, not null`)
 		}
 		// The raw file holds the same values in plain text, exactly.
 		var raw struct {
@@ -240,10 +234,10 @@ func TestDecryptCommand(t *testing.T) {
 			t.Errorf("decrypted files must be 0600, got %v", st.Mode().Perm())
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "prod/payments/secret-golden.base64.yaml")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "prod/payments/secret-golden.raw.yaml")); err == nil {
 		t.Error("only the given folder must be decrypted")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "stg/web/configmap-x.base64.yaml")); err == nil {
+	if _, err := os.Stat(filepath.Join(dir, "stg/web/configmap-x.raw.yaml")); err == nil {
 		t.Error("only Secrets must be decrypted")
 	}
 	ex := string(mustRead(t, filepath.Join(dir, ".git/info/exclude")))
@@ -269,13 +263,15 @@ func TestDecryptCommand(t *testing.T) {
 	}
 
 	// -clean removes exactly what decrypt wrote.
-	if code, out, _ := runCLI(t, "-clean", dir); code != 0 || !strings.Contains(out, "removed 6") {
+	// A base64 file an older version wrote is removed too.
+	os.WriteFile(filepath.Join(dir, "stg/web/secret-golden.base64.yaml"), []byte(decryptedMark), 0o600)
+	if code, out, _ := runCLI(t, "-clean", dir); code != 0 || !strings.Contains(out, "removed 4") {
 		t.Errorf("clean: exit %d, %q", code, out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stg/web/secret-golden.yaml")); err != nil {
 		t.Error("-clean must keep the encrypted files")
 	}
-	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.raw.yaml")); len(m) > 0 {
+	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.*.yaml")); len(m) > 0 {
 		t.Errorf("left after -clean: %v", m)
 	}
 }
@@ -292,7 +288,7 @@ func TestDecryptAllOrNothing(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut, "key DB_PASSWORD") || !strings.Contains(errOut, "nothing written") {
 		t.Errorf("exit %d, %q", code, errOut)
 	}
-	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.base64.yaml")); len(m) > 0 {
+	if m, _ := filepath.Glob(filepath.Join(dir, "*/*/*.raw.yaml")); len(m) > 0 {
 		t.Errorf("written despite a failure: %v", m)
 	}
 	if code, _, errOut := runCLI(t, "-key", "testdata/decrypt/pickle.crt", dir); code != 1 || !strings.Contains(errOut, "certificate") {
@@ -311,6 +307,30 @@ func TestDecryptSkipsMasked(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "stg/web/secret-old.raw.yaml")); err == nil {
 		t.Error("a masked Secret must not get decrypted files")
+	}
+}
+
+// TestRawKeepsHeaderAndMetadata: the raw file is the jar file with only its
+// data block replaced: header comments first, metadata where it was, and
+// stringData in place of data.
+func TestRawKeepsHeaderAndMetadata(t *testing.T) {
+	dir := t.TempDir()
+	header := "# last-manager: argocd-controller (Update)\n# last-changed: 2026-11-15T09:00:00Z\n# argocd-app: payments\n"
+	f := filepath.Join(dir, "secret-golden.yaml")
+	os.WriteFile(f, append([]byte(header), mustRead(t, goldenSecret)...), 0o644)
+	if code, _, errOut := runCLI(t, "-key", goldenKey, f); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	raw := string(mustRead(t, filepath.Join(dir, "secret-golden.raw.yaml")))
+	if !strings.HasPrefix(raw, decryptedMark+header+"apiVersion: v1\nkind: Secret\nmetadata:\n  name: golden\n") {
+		t.Errorf("header and metadata must come first, as in the jar file:\n%s", raw)
+	}
+	md, td, sd, dd := strings.Index(raw, "\nmetadata:"), strings.Index(raw, "\ntype: Opaque"), strings.Index(raw, "\nstringData:"), strings.Index(raw, "\ndata:")
+	if !(md < td && td < sd && sd < dd) {
+		t.Errorf("want metadata, type, stringData, data in that order:\n%s", raw)
+	}
+	if !strings.Contains(raw, "  DB_PASSWORD: ") || strings.Contains(raw, "enc:") {
+		t.Errorf("values must be plain:\n%s", raw)
 	}
 }
 

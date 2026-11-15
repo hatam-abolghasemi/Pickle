@@ -64,7 +64,7 @@ data:
 
 The blob is a standard CMS AuthEnvelopedData: AES-256-GCM encrypts the value, RSA-OAEP (SHA-256) encrypts that AES key to your certificate. GCM authenticates the value, so decrypting gives exactly the original bytes or fails with an error; a damaged or altered blob never decrypts to something wrong. Pickle gets only your certificate: it can encrypt, never decrypt. Diffs stay per key: an unchanged value keeps its line.
 
-`pickle decrypt` opens them, for a whole cluster, a namespace or one Secret: next to each Secret it writes a base64 and a plain-text copy, both ready for `kubectl apply`, or nothing at all if any value fails. Plain OpenSSL 3 opens single values too. See [restore](restore.md).
+`pickle decrypt` opens them, for a whole cluster, a namespace or one Secret: next to each Secret it writes a plain-text copy, ready for `kubectl apply`, or nothing at all if any value fails. Plain OpenSSL 3 opens single values too. See [restore](restore.md).
 
 **1. Make sure pickle has a fingerprint key.** Encryption needs one; pickle refuses to start without it. This prints nothing if it's missing:
 
@@ -156,7 +156,7 @@ Good to know:
 | `known_hosts` | Your Git host's SSH host keys | Anywhere. It isn't secret. | Run `ssh-keyscan` again. |
 | Your values file | Pickle's settings for one cluster | Commit it wherever you keep deployment config. It holds no secrets. | Write it again from [`values-sample.yaml`](../helm/values-sample.yaml). |
 
-The `*.base64.yaml` and `*.raw.yaml` files `pickle decrypt` writes hold plain Secret values. They are for the moment you need them: delete them with `pickle decrypt -clean` when you're done.
+The `*.raw.yaml` files `pickle decrypt` writes hold plain Secret values. They are for the moment you need them: delete them with `pickle decrypt -clean` when you're done.
 
 ## Back up and restore
 

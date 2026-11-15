@@ -35,12 +35,12 @@ const decryptUsage = `Usage:
 
 PATH is a pickle jar repo, a cluster folder, a namespace folder or one
 secret-*.yaml file; the default is the current folder. Next to every
-encrypted Secret it writes two files you can kubectl apply:
+encrypted Secret it writes one file you can kubectl apply:
 
-  secret-<name>.base64.yaml   the Secret with its values under data (base64)
-  secret-<name>.raw.yaml      the same Secret with plain values under stringData
+  secret-<name>.raw.yaml   the Secret with plain values under stringData,
+                           with the header and metadata of the jar file
 
-They are kept out of git through the clone's .git/info/exclude. If any value
+It is kept out of git through the clone's .git/info/exclude. If any value
 fails to decrypt, nothing is written. -clean removes the written files.
 
 The key is -key, $PICKLE_KEY, ~/.config/pickle/pickle.key or /pickle.key.
@@ -132,8 +132,7 @@ func runDecrypt(args []string, stdout, stderr io.Writer) int {
 			errs = append(errs, fmt.Sprintf("%s: %v", f, err))
 			continue
 		}
-		p := decryptedPaths(f)
-		outs = append(outs, output{p[0], decryptedMark + string(b64)}, output{p[1], decryptedMark + string(raw)})
+		outs = append(outs, output{rawPath(f), decryptedMark + string(raw)})
 	}
 	if len(errs) > 0 {
 		for _, e := range errs {
@@ -147,7 +146,7 @@ func runDecrypt(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	ignored := excludeFromGit(paths[0])
-	fmt.Fprintf(stdout, "decrypted %s: *.base64.yaml and *.raw.yaml next to each\n", plural(len(outs)/2, "Secret"))
+	fmt.Fprintf(stdout, "decrypted %s: *.raw.yaml next to each\n", plural(len(outs), "Secret"))
 	if !ignored {
 		fmt.Fprintln(stderr, "pickle decrypt: not inside a git clone, so the files are not git-ignored; never commit them")
 	}
@@ -164,10 +163,16 @@ func plural(n int, what string) string {
 	return fmt.Sprintf("%d %ss", n, what)
 }
 
-// decryptedPaths are the two files written for secret-<name>.yaml.
+// rawPath is the file written for secret-<name>.yaml.
+func rawPath(f string) string {
+	return strings.TrimSuffix(f, ".yaml") + ".raw.yaml"
+}
+
+// decryptedPaths are the files -clean removes for secret-<name>.yaml: the
+// raw file, and the base64 file versions up to 1.2.2 wrote too.
 func decryptedPaths(f string) [2]string {
 	base := strings.TrimSuffix(f, ".yaml")
-	return [2]string{base + ".base64.yaml", base + ".raw.yaml"}
+	return [2]string{base + ".base64.yaml", rawPath(f)}
 }
 
 func findKey(flagKey string) (string, error) {
@@ -273,35 +278,68 @@ const excludeLines = "# pickle decrypt: plain Secret values\nsecret-*.base64.yam
 
 // rawSecret turns a decrypted Secret into the same Secret with plain values
 // under stringData. A value that isn't text stays under data, as base64.
+// Only the data block changes: the header comments, metadata and every other
+// line stay exactly as they are in the jar file, in the same order.
 func rawSecret(b64 []byte) ([]byte, error) {
-	var obj map[string]any
-	if err := yaml.Unmarshal(b64, &obj); err != nil {
+	lines := strings.SplitAfter(string(b64), "\n")
+	start, end := -1, len(lines)
+	for i, line := range lines {
+		body := strings.TrimRight(line, "\r\n")
+		if start < 0 {
+			if body == "data:" {
+				start = i
+			}
+			continue
+		}
+		if body != "" && body[0] != ' ' && body[0] != '#' {
+			end = i
+			break
+		}
+	}
+	if start < 0 {
+		return b64, nil
+	}
+
+	var block struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[start:end], "")), &block); err != nil {
 		return nil, err
 	}
-	data, _ := obj["data"].(map[string]any)
-	plain := map[string]any{}
-	for k, v := range data {
-		s, _ := v.(string)
-		b, err := base64.StdEncoding.DecodeString(s)
+	plain, data := map[string]any{}, map[string]any{}
+	for k, v := range block.Data {
+		b, err := base64.StdEncoding.DecodeString(v)
 		if err != nil {
 			return nil, fmt.Errorf("key %s: %w", k, err)
 		}
 		if utf8.Valid(b) {
 			plain[k] = string(b)
-			delete(data, k)
+		} else {
+			data[k] = v
 		}
 	}
-	if len(data) == 0 {
-		delete(obj, "data")
+
+	var out strings.Builder
+	out.WriteString(strings.Join(lines[:start], ""))
+	for _, part := range []struct {
+		name   string
+		values map[string]any
+	}{{"stringData", plain}, {"data", data}} {
+		if len(part.values) == 0 {
+			continue
+		}
+		j, err := json.Marshal(map[string]any{part.name: part.values})
+		if err != nil {
+			return nil, err
+		}
+		y, err := toYAML(j)
+		if err != nil {
+			return nil, err
+		}
+		out.Write(y)
 	}
-	if len(plain) > 0 {
-		obj["stringData"] = plain
-	}
-	j, err := json.Marshal(obj)
-	if err != nil {
-		return nil, err
-	}
-	return toYAML(j)
+	out.WriteString(strings.Join(lines[end:], ""))
+	return []byte(out.String()), nil
 }
 
 // encLine is a data line holding an encrypted value: key, then the value,
