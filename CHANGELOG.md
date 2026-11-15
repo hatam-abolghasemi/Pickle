@@ -4,6 +4,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-11-15
+
+### Added
+
+- An `# argocd-initiated-by:` header line on objects Argo CD changed: who started the sync, read from the Application's `status.operationState`. That is the operation's `Triggered by` info when there is one, so syncs from portals like [tiphys](https://github.com/ravanbod/tiphys), which call Argo CD as their own account, show the real user (`sara (tiphys)`); else the Argo CD username, or `automated` for auto-sync and self-heal. Written only when the object's last change is Argo CD's and falls inside the Application's last sync; otherwise, or when there's no Argo CD or nothing usable in the status, it is left out rather than guessed. Like the rest of the header, it appears the next time a file's content changes. See [docs/how-it-works.md](docs/how-it-works.md#header).
+
+### Changed
+
+- `pickle decrypt` writes one file per Secret, `secret-<name>.raw.yaml`, and no longer `secret-<name>.base64.yaml`. The raw file now keeps the jar file as it is, header comments and metadata on top, and only swaps `data` for `stringData` (a value that isn't text stays under `data`). Before, its fields were re-sorted and the header was dropped. `pickle decrypt -clean` still removes `*.base64.yaml` files older versions wrote. See [docs/restore.md](docs/restore.md).
+
 ## [1.2.2] - 2026-11-15
 
 ### Added
@@ -168,7 +178,8 @@ Less CPU and memory, with the same files and commits: in a lab cluster of 6,600 
 - Prometheus metrics and a health endpoint.
 - Plain manifests, a Helm chart, and docs.
 
-[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/hatam-abolghasemi/pickle/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/hatam-abolghasemi/pickle/compare/v1.1.0...v1.2.0
