@@ -37,6 +37,7 @@ type config struct {
 	CommitDelay         time.Duration
 	CommitMaxDelay      time.Duration
 	RediscoveryInterval time.Duration
+	PageCacheDropDelay  time.Duration
 	PageSize            int64
 	PagePause           time.Duration
 	QPS                 float32
@@ -224,6 +225,9 @@ func loadConfig() (*config, error) {
 		return nil, err
 	}
 	if c.RediscoveryInterval, err = optDurEnv("PICKLE_REDISCOVERY_INTERVAL"); err != nil {
+		return nil, err
+	}
+	if c.PageCacheDropDelay, err = durEnv("PICKLE_PAGE_CACHE_DROP_DELAY", 40*time.Second); err != nil {
 		return nil, err
 	}
 	if c.Exclude, err = parseExclude(os.Getenv("PICKLE_EXCLUDE")); err != nil {

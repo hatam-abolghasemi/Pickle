@@ -2,8 +2,11 @@ package main
 
 import (
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,9 +26,29 @@ import (
 // handed back (fadvise DONTNEED); the next read, if any, comes from disk.
 
 // dropDelay is how long after a write its pages are dropped: the kernel
-// keeps pages not yet written back (dirty_expire_centisecs, 30s by default),
-// so dropping them right after the write would leave most of them.
-var dropDelay = 40 * time.Second
+// keeps pages not yet written back, and writes them dirty_expire_centisecs
+// after they were dirtied, checked every dirty_writeback_centisecs, so
+// dropping them sooner would leave most of them. setDropDelay reads both
+// from /proc/sys/vm; PICKLE_PAGE_CACHE_DROP_DELAY is used only when they
+// can't be read.
+var dropDelay time.Duration
+
+// setDropDelay sets dropDelay from the kernel's writeback window, or to
+// fallback when that can't be read.
+func setDropDelay(fallback time.Duration) {
+	var cs int
+	for _, name := range []string{"dirty_expire_centisecs", "dirty_writeback_centisecs"} {
+		b, err := os.ReadFile("/proc/sys/vm/" + name)
+		n, perr := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil || perr != nil || n <= 0 {
+			dropDelay = fallback
+			slog.Warn("can't read the kernel's writeback window; page cache is dropped after PICKLE_PAGE_CACHE_DROP_DELAY", "file", "/proc/sys/vm/"+name, "delay", fallback)
+			return
+		}
+		cs += n
+	}
+	dropDelay = time.Duration(cs) * 10 * time.Millisecond
+}
 
 // dropper drops the pages of files some time after they were written. Each
 // batch waits dropDelay; one timer serves every pending batch.
