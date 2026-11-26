@@ -29,6 +29,8 @@ func main() {
 		fatal("config", err)
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	applyMemoryLimit()
+	setDropDelay(cfg.PageCacheDropDelay)
 
 	rc, err := restConfig()
 	if err != nil {

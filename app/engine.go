@@ -164,6 +164,12 @@ func (e *engine) run(parent context.Context) error {
 	ctx, abort := context.WithCancelCause(parent)
 	defer abort(nil)
 	e.abort = abort
+	startup := working() // claim, discovery, repo load and backfill
+	defer func() {
+		if startup != nil {
+			startup()
+		}
+	}()
 	if err := e.claim(ctx); err != nil {
 		return err
 	}
@@ -197,6 +203,9 @@ func (e *engine) run(parent context.Context) error {
 		return err
 	}
 	e.finishBackfill()
+	startup()
+	startup = nil
+	soon()
 
 	var tick <-chan time.Time
 	if e.cfg.RediscoveryInterval > 0 {
@@ -216,12 +225,14 @@ func (e *engine) run(parent context.Context) error {
 		case <-tick:
 		}
 		settle = nil
+		done := working()
 		if res, err := e.discover(); err != nil {
 			slog.Warn("rediscovery failed", "err", err)
 		} else {
 			e.activateLater(ctx, res)
 		}
-		releaseMemory()
+		done()
+		soon()
 	}
 }
 
@@ -567,6 +578,7 @@ func (e *engine) consume(ctx context.Context, r *resource, w watch.Interface, rv
 			if discoveryTriggers[r.id()] {
 				notify(e.rediscover)
 			}
+			soon()
 		case watch.Bookmark:
 			if o, ok := ev.Object.(metav1.Object); ok {
 				rv = o.GetResourceVersion()
@@ -586,6 +598,8 @@ func (e *engine) consume(ctx context.Context, r *resource, w watch.Interface, rv
 // resync relists a whole type (paginated, rate-limited) and drops files of objects
 // that no longer exist. Returns the resourceVersion to watch from.
 func (e *engine) resync(ctx context.Context, r *resource) string {
+	defer soon()
+	defer working()()
 	e.m.resyncs.Add(1)
 	for ctx.Err() == nil {
 		rv, seen, err := e.listAll(ctx, r, "", true)
@@ -604,7 +618,6 @@ func (e *engine) resync(ctx context.Context, r *resource) string {
 			}
 		}
 		e.mu.Unlock()
-		releaseMemory()
 		return rv
 	}
 	return ""
@@ -1155,7 +1168,6 @@ func (e *engine) finishBackfill() {
 	notify(e.changed)
 	e.m.backfillComplete.Store(1)
 	slog.Info("backfill complete", "objects", tracked, "staleRemoved", stale)
-	releaseMemory()
 }
 
 // ---- committing ----
@@ -1213,6 +1225,8 @@ func (e *engine) flush(ctx context.Context) error {
 	if idle {
 		return nil
 	}
+	defer soon()
+	defer working()()
 
 	head, err := e.git.fetch(ctx)
 	if err != nil {
@@ -1271,7 +1285,6 @@ func (e *engine) flush(ctx context.Context) error {
 		e.git.dropCaches(paths)
 		e.git.compact(ctx)
 	}
-	releaseMemory()
 	return nil
 }
 
