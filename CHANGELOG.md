@@ -4,6 +4,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-26
+
+### Changed
+
+- Memory is held only while it is used, without waiting for the GC or `GOMEMLIMIT`: once work has been quiet for 5 seconds and nothing is in flight (a push, a relist, a rediscovery or the backfill), freed heap and garbage not yet collected over 1 MiB go back to the OS at once; under events that never pause, at least every 30 seconds. Before, it was handed back right after a burst but skipped for any burst within 10 seconds of the last one, so the last burst of a busy stretch kept its memory until the next one, and every hand-back forced a full collection even when there was nothing to free. A watch event costs one clock read and one atomic store; nothing runs between bursts. See [docs/operations.md](docs/operations.md#resources).
+- `GOGC` defaults to 50, and `GOMEMLIMIT` to 90% of the container's memory limit, read by pickle from its own cgroup. The manifests and the chart no longer set `GOMEMLIMIT` (it was 100% of the limit). Either variable set by hand still wins.
+- Page cache of what a push wrote is dropped after the kernel's writeback window, read from `/proc/sys/vm` (35 seconds by default), instead of a fixed 40 seconds. `PICKLE_PAGE_CACHE_DROP_DELAY` (default `40s`) is used only when it can't be read.
+
 ## [1.2.3] - 2026-11-15
 
 ### Added
