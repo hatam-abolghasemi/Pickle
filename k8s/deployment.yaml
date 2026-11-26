@@ -39,11 +39,6 @@ spec:
           envFrom:
             - configMapRef:
                 name: pickle
-          env:
-            - name: GOMEMLIMIT
-              valueFrom:
-                resourceFieldRef:
-                  resource: limits.memory
           resources:
             requests:
               cpu: 20m

@@ -52,14 +52,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "pickle.fullname" . }}
+          {{- with .Values.extraEnv }}
           env:
-            - name: GOMEMLIMIT
-              valueFrom:
-                resourceFieldRef:
-                  resource: limits.memory
-            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.service.port }}

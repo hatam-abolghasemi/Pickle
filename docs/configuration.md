@@ -33,7 +33,9 @@ sudo kubectl -n pickle rollout restart deploy/pickle
 | `PICKLE_SECRET_FINGERPRINT_KEY_FILE` | `/etc/pickle/git/fingerprint-key` | Key for Secret value fingerprints; a missing file turns them off |
 | `PICKLE_SECRET_ENCRYPTION_CERT_FILE` | `/etc/pickle/git/encryption-cert` | Certificate to encrypt Secret values to; a missing file turns encryption off |
 | `PICKLE_REPO_DIR` | `/data/repo` | Local clone. Must be empty or a pickle clone; anything else is refused, never deleted |
-| `GOMEMLIMIT` | the memory limit | Set from `limits.memory` by the manifests, so the GC works harder before the container is OOM-killed |
+| `GOGC` | `50` | Go's GC target; at 50 the heap grows to 1.5x the live set after a burst, not 2x |
+| `GOMEMLIMIT` | 90% of the container's memory limit | Read from pickle's own cgroup at startup; the rest is headroom. Set it only to override |
+| `PICKLE_PAGE_CACHE_DROP_DELAY` | `40s` | Used only when the kernel's writeback window can't be read from `/proc/sys/vm`; see [Memory](operations.md#resources) |
 
 `PICKLE_COMMIT_INTERVAL` from 1.0.0 still works as `PICKLE_COMMIT_DELAY`, with a warning in the log.
 
